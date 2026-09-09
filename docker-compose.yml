@@ -1,0 +1,26 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: taskflow-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: taskflow
+      POSTGRES_USER: taskflow
+      POSTGRES_PASSWORD: taskflow_pass
+    ports:
+      # Host 5433 -> container 5432.
+      # 5433 is used on purpose: this machine already has a local
+      # Postgres instance bound to the default 5432. If that's not
+      # true on your machine, feel free to map back to "5432:5432"
+      # (and update spring.datasource.url in application.yml to match).
+      - "5433:5432"
+    volumes:
+      - taskflow_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U taskflow -d taskflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  taskflow_pg_data:

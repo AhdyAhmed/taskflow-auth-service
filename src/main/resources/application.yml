@@ -1,0 +1,35 @@
+spring:
+  application:
+    name: taskflow-auth-service
+  profiles:
+    active: dev
+
+---
+# ------------------------------------------------------------------
+# dev profile
+# Postgres runs in Docker (see docker-compose.yml) mapped to host
+# port 5433, NOT the Postgres default 5432 — that's deliberate,
+# since a local Postgres instance may already be running on 5432.
+# ------------------------------------------------------------------
+spring:
+  config:
+    activate:
+      on-profile: dev
+
+  datasource:
+    url: jdbc:postgresql://localhost:5433/taskflow
+    username: taskflow
+    password: taskflow_pass
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+
+server:
+  port: 8080
