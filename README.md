@@ -2,7 +2,7 @@
 
 A secure REST API demonstrating JWT authentication, role-based access control, and ownership-based authorization in Spring Boot. This is Project 2 of a 3-project backend portfolio (Core REST API → **Auth & Authorization** → Production-grade Booking/Order System).
 
-**Status:** 🚧 Day 1 — project bootstrap. Domain model, JWT auth, RBAC, ownership rules, and tests land over the following days (see [Roadmap](#roadmap) below).
+**Status:** 🚧 Day 2 — entity relationships & JPA auditing wired up. JWT auth, RBAC, ownership rules, and tests land over the following days (see [Roadmap](#roadmap) below).
 
 ---
 
@@ -54,33 +54,48 @@ docker compose down          # stop the container, keep data
 docker compose down -v       # stop and wipe the volume (fresh DB next time)
 ```
 
-## Project structure (Day 1)
+## Project structure (Day 2)
 
 ```
 src/main/java/com/ahdyahmed/taskflow/
 ├── TaskflowApplication.java
-└── domain/
-    ├── entity/       # User, Project, Task (fields only — relationships land Day 2)
-    └── enums/        # Role, TaskStatus, TaskPriority
+├── config/
+│   └── JpaAuditingConfig.java   # @EnableJpaAuditing
+├── domain/
+│   ├── entity/
+│   │   ├── BaseEntity.java      # id + createdAt/updatedAt, shared by all entities
+│   │   ├── User.java
+│   │   ├── Project.java         # owner (@ManyToOne), members (@ManyToMany)
+│   │   └── Task.java            # project/assignee/createdBy (@ManyToOne)
+│   └── enums/                   # Role, TaskStatus, TaskPriority
+└── repository/
+    ├── UserRepository.java
+    ├── ProjectRepository.java
+    └── TaskRepository.java
 ```
 
 ## Roadmap
 
-| Day(s) | Focus |
-|---|---|
-| 1 | Project skeleton, Docker Postgres, domain entities |
-| 2-3 | Entity relationships, auditing, basic CRUD (pre-security) |
-| 4-6 | Registration, Spring Security config, JWT generation, login/refresh/logout |
-| 7-9 | Role-based access control, ownership rules, edge cases |
-| 10-11 | Account lockout, rate limiting on auth endpoints |
-| 12-13 | Email verification, password reset (mocked email) |
-| 14-16 | Unit + integration tests, security test matrix |
-| 17-18 | OpenAPI docs, architecture diagram, final README |
+| Day(s) | Focus | Status |
+|---|---|---|
+| 1 | Project skeleton, Docker Postgres, domain entities | ✅ |
+| 2 | Entity relationships, JPA auditing | ✅ |
+| 3 | Basic CRUD (pre-security) |  |
+| 4-6 | Registration, Spring Security config, JWT generation, login/refresh/logout |  |
+| 7-9 | Role-based access control, ownership rules, edge cases |  |
+| 10-11 | Account lockout, rate limiting on auth endpoints |  |
+| 12-13 | Email verification, password reset (mocked email) |  |
+| 14-16 | Unit + integration tests, security test matrix |  |
+| 17-18 | OpenAPI docs, architecture diagram, final README |  |
 
 ## Design decisions (living section, updated as the project grows)
 
-- **Relationships deferred to Day 2:** Day 1 entities use plain foreign-key-style `Long` fields instead of `@ManyToOne`/`@ManyToMany` so the domain model and the JPA relationship layer land as two distinct, reviewable commits.
+- **Relationships deferred to Day 2:** Day 1 entities used plain foreign-key-style `Long` fields instead of `@ManyToOne`/`@ManyToMany` so the domain model and the JPA relationship layer landed as two distinct, reviewable commits.
 - **Postgres on host port 5433:** avoids clashing with a default local Postgres install; see `docker-compose.yml` for the rationale inline.
+- **No collection back-references on `User`:** `Project`/`Task` point at `User` via `@ManyToOne`, but `User` doesn't carry `@OneToMany` collections back (e.g. no `ownedProjects` list). Bidirectional collections on a "central" entity like `User` are a common source of accidental full-table fetches and Lombok `toString`/`equals` recursion. Lookups like "all projects owned by this user" are explicit repository queries instead (`ProjectRepository.findByOwner_Id`) — one extra method, much more predictable performance.
+- **All associations are `FetchType.LAZY`:** loading a `Task` should never silently pull its `Project` and both `User`s along with it. Anywhere eager loading is actually wanted (e.g. a task list view), it'll be an explicit `@Query` with `JOIN FETCH` or a projection — not a change to the entity's default fetch type.
+- **`BaseEntity` for id + auditing:** `id`, `createdAt`, `updatedAt` live in one `@MappedSuperclass` so every entity gets them consistently, and adding a new entity later can't forget to wire up auditing.
+- **Equality is `id`-only:** entities use `@EqualsAndHashCode(onlyExplicitlyIncluded = true)` on just `id` (inherited via `callSuper = true`), which is the safe default for JPA — comparing every field would break as soon as lazy fields aren't loaded on one side.
 - More decisions (refresh-token storage strategy, lockout duration, rate-limit approach) will be documented here as each lands.
 
 ## License

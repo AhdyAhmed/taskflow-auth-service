@@ -5,36 +5,35 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
-import jakarta.persistence.Id;
 import jakarta.persistence.Table;
-import lombok.AllArgsConstructor;
 import lombok.Builder;
+import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
+import lombok.ToString;
+import lombok.experimental.SuperBuilder;
 
 import java.time.LocalDateTime;
 
 /**
- * Day 1: plain field-only entity, no relationships yet.
- * Auditing (createdAt/updatedAt) and account-protection fields
- * (failedLoginAttempts/lockedUntil) are scaffolded here now so the
- * schema doesn't need reshaping once Day 10-11 (account lockout) lands.
+ * Day 2: no collection side of the Project/Task relationships is kept
+ * here on purpose. A bidirectional {@code @OneToMany} back-reference on
+ * User (e.g. "ownedProjects", "assignedTasks") is tempting but tends to
+ * cause accidental large-collection fetches and messy
+ * equals/hashCode/toString cycles. Those lookups are exposed instead as
+ * explicit repository queries (see ProjectRepository/TaskRepository) —
+ * slightly more code, much easier to reason about performance-wise.
  */
 @Entity
 @Table(name = "users")
 @Getter
 @Setter
+@SuperBuilder
 @NoArgsConstructor
-@AllArgsConstructor
-@Builder
-public class User {
-
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+@EqualsAndHashCode(callSuper = true)
+@ToString(callSuper = true)
+public class User extends BaseEntity {
 
     @Column(nullable = false, unique = true)
     private String email;

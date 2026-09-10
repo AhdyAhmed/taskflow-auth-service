@@ -6,33 +6,35 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
-import jakarta.persistence.Id;
+import jakarta.persistence.FetchType;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
-import lombok.AllArgsConstructor;
 import lombok.Builder;
+import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
+import lombok.ToString;
+import lombok.experimental.SuperBuilder;
 
 /**
- * Day 1: plain field-only entity.
- * {@code projectId}, {@code assigneeId} and {@code createdById} become
- * proper {@code @ManyToOne} relationships on Day 2.
+ * Day 2: project/assignee/createdBy are now real {@code @ManyToOne}
+ * associations. {@code assignee} stays nullable — an unassigned task is
+ * a normal, valid state, not an error case. {@code project} and
+ * {@code createdBy} are required: a task can't exist outside a project,
+ * and every task needs an accountable creator for later
+ * ownership/authorization checks (Day 8).
  */
 @Entity
 @Table(name = "tasks")
 @Getter
 @Setter
+@SuperBuilder
 @NoArgsConstructor
-@AllArgsConstructor
-@Builder
-public class Task {
-
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+@EqualsAndHashCode(callSuper = true)
+@ToString(callSuper = true, exclude = {"project", "assignee", "createdBy"})
+public class Task extends BaseEntity {
 
     @Column(nullable = false)
     private String title;
@@ -50,12 +52,15 @@ public class Task {
     @Builder.Default
     private TaskPriority priority = TaskPriority.MEDIUM;
 
-    @Column(name = "project_id", nullable = false)
-    private Long projectId;
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "project_id", nullable = false)
+    private Project project;
 
-    @Column(name = "assignee_id")
-    private Long assigneeId;
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "assignee_id")
+    private User assignee;
 
-    @Column(name = "created_by_id", nullable = false)
-    private Long createdById;
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "created_by_id", nullable = false)
+    private User createdBy;
 }
