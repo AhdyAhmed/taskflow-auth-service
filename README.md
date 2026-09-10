@@ -2,7 +2,7 @@
 
 A secure REST API demonstrating JWT authentication, role-based access control, and ownership-based authorization in Spring Boot. This is Project 2 of a 3-project backend portfolio (Core REST API → **Auth & Authorization** → Production-grade Booking/Order System).
 
-**Status:** 🚧 Day 2 — entity relationships & JPA auditing wired up. JWT auth, RBAC, ownership rules, and tests land over the following days (see [Roadmap](#roadmap) below).
+**Status:** 🚧 Day 3 — Project/Task CRUD, DTOs, and global exception handling. JWT auth, RBAC, ownership rules, and tests land over the following days (see [Roadmap](#roadmap) below).
 
 ---
 
@@ -54,20 +54,74 @@ docker compose down          # stop the container, keep data
 docker compose down -v       # stop and wipe the volume (fresh DB next time)
 ```
 
-## Project structure (Day 2)
+## API (Day 3)
+
+All endpoints are open with no auth for now (see [Design decisions](#design-decisions-living-section-updated-as-the-project-grows) — this is temporary, not an oversight).
+
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/api/projects` | body: `name`, `description?`, `ownerId` |
+| GET | `/api/projects/{id}` | |
+| GET | `/api/projects` | paginated (`?page=&size=&sort=`) |
+| PUT | `/api/projects/{id}` | full replace: `name`, `description?` |
+| DELETE | `/api/projects/{id}` | |
+| POST | `/api/tasks` | body: `title`, `description?`, `status?`, `priority?`, `projectId`, `assigneeId?`, `createdById` |
+| GET | `/api/tasks/{id}` | |
+| GET | `/api/tasks` | paginated, all tasks |
+| GET | `/api/tasks/project/{projectId}` | paginated, scoped to one project |
+| PUT | `/api/tasks/{id}` | full replace, including `assigneeId` (omit = unassign) |
+| DELETE | `/api/tasks/{id}` | |
+
+### Try it out
+
+`docker compose up -d` + `mvn spring-boot:run` seeds one user (`seed.manager@taskflow.dev`, id `1` on a fresh DB) via `data.sql`, since there's no registration endpoint yet to create one through the API:
+
+```bash
+# Create a project owned by the seeded user
+curl -X POST http://localhost:8080/api/projects \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Website Redesign", "description": "Q4 marketing site refresh", "ownerId": 1}'
+
+# Create a task in that project (swap 1 for the id the previous call returned)
+curl -X POST http://localhost:8080/api/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Wireframe homepage", "projectId": 1, "createdById": 1}'
+
+# List tasks in that project
+curl http://localhost:8080/api/tasks/project/1
+
+# A validation error (blank name) — returns the ApiErrorResponse shape
+curl -X POST http://localhost:8080/api/projects \
+  -H "Content-Type: application/json" \
+  -d '{"ownerId": 1}'
+```
+
+## Project structure (Day 3)
 
 ```
 src/main/java/com/ahdyahmed/taskflow/
 ├── TaskflowApplication.java
 ├── config/
-│   └── JpaAuditingConfig.java   # @EnableJpaAuditing
+│   ├── JpaAuditingConfig.java           # @EnableJpaAuditing
+│   └── TemporaryOpenSecurityConfig.java # permitAll() until JWT auth lands (Day 4-6)
+├── controller/
+│   ├── ProjectController.java
+│   └── TaskController.java
+├── service/
+│   ├── ProjectService.java
+│   └── TaskService.java
+├── mapper/
+│   ├── ProjectMapper.java
+│   └── TaskMapper.java
+├── dto/
+│   ├── request/   # ProjectCreateRequest, ProjectUpdateRequest, TaskCreateRequest, TaskUpdateRequest
+│   └── response/  # ProjectResponse, TaskResponse, ApiErrorResponse
+├── exception/
+│   ├── ResourceNotFoundException.java
+│   └── GlobalExceptionHandler.java      # @RestControllerAdvice, consistent JSON error shape
 ├── domain/
-│   ├── entity/
-│   │   ├── BaseEntity.java      # id + createdAt/updatedAt, shared by all entities
-│   │   ├── User.java
-│   │   ├── Project.java         # owner (@ManyToOne), members (@ManyToMany)
-│   │   └── Task.java            # project/assignee/createdBy (@ManyToOne)
-│   └── enums/                   # Role, TaskStatus, TaskPriority
+│   ├── entity/                          # BaseEntity, User, Project, Task
+│   └── enums/                           # Role, TaskStatus, TaskPriority
 └── repository/
     ├── UserRepository.java
     ├── ProjectRepository.java
@@ -80,7 +134,7 @@ src/main/java/com/ahdyahmed/taskflow/
 |---|---|---|
 | 1 | Project skeleton, Docker Postgres, domain entities | ✅ |
 | 2 | Entity relationships, JPA auditing | ✅ |
-| 3 | Basic CRUD (pre-security) |  |
+| 3 | Basic CRUD (pre-security) | ✅ |
 | 4-6 | Registration, Spring Security config, JWT generation, login/refresh/logout |  |
 | 7-9 | Role-based access control, ownership rules, edge cases |  |
 | 10-11 | Account lockout, rate limiting on auth endpoints |  |
@@ -96,6 +150,12 @@ src/main/java/com/ahdyahmed/taskflow/
 - **All associations are `FetchType.LAZY`:** loading a `Task` should never silently pull its `Project` and both `User`s along with it. Anywhere eager loading is actually wanted (e.g. a task list view), it'll be an explicit `@Query` with `JOIN FETCH` or a projection — not a change to the entity's default fetch type.
 - **`BaseEntity` for id + auditing:** `id`, `createdAt`, `updatedAt` live in one `@MappedSuperclass` so every entity gets them consistently, and adding a new entity later can't forget to wire up auditing.
 - **Equality is `id`-only:** entities use `@EqualsAndHashCode(onlyExplicitlyIncluded = true)` on just `id` (inherited via `callSuper = true`), which is the safe default for JPA — comparing every field would break as soon as lazy fields aren't loaded on one side.
+- **Security starter left wide open for now (`TemporaryOpenSecurityConfig`):** `spring-boot-starter-security` has been on the classpath since Day 1. Without an explicit `SecurityFilterChain`, Spring Boot secures every endpoint behind HTTP Basic with a random generated password — correct for production, but it would make Day 3's CRUD endpoints untestable before JWT auth exists. This config bean is explicitly named "Temporary" and gets replaced outright (not extended) once Day 4-6 lands.
+- **`ownerId`/`createdById` trusted from the request body:** same reasoning as above — there's no authenticated principal yet to derive them from. Called out with a doc comment directly on the affected DTO fields, not just here, so it's visible at the point of use.
+- **Seed data via `data.sql` (dev-only):** `Project.owner` and `Task.createdBy` are `NOT NULL` foreign keys, but there's no registration endpoint yet to create a `User` through. `data.sql` inserts one placeholder user so the API is actually exercisable; `spring.jpa.defer-datasource-initialization: true` is required so this runs *after* Hibernate creates the schema, not before. This file is deleted once registration (Day 4-6) makes it redundant.
+- **PUT means full replace:** `TaskUpdateRequest`/`ProjectUpdateRequest` overwrite the fields they carry — in particular, omitting `assigneeId` on a task update clears the assignee rather than leaving it untouched. A PATCH-style partial update can be added later if that proves too blunt in practice.
+- **No mapping framework yet:** `ProjectMapper`/`TaskMapper` are hand-written, not MapStruct. At two entities with non-overlapping shapes, a mapping library is more ceremony than it saves; revisit if the DTO count grows.
+- **Global error shape:** every error — 404, validation failure, or unexpected exception — comes back as the same `ApiErrorResponse` JSON shape via `@RestControllerAdvice`. Unexpected exceptions are logged server-side with the full stack trace but never leak their message to the client.
 - More decisions (refresh-token storage strategy, lockout duration, rate-limit approach) will be documented here as each lands.
 
 ## License

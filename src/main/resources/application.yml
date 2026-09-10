@@ -30,6 +30,15 @@ spring:
       hibernate:
         format_sql: true
         dialect: org.hibernate.dialect.PostgreSQLDialect
+    # Without this, Spring Boot runs data.sql BEFORE Hibernate creates
+    # the schema on first boot, and the seed insert fails with "relation
+    # users does not exist". Deferring it until after schema generation
+    # is what makes data.sql usable alongside ddl-auto at all.
+    defer-datasource-initialization: true
+
+  sql:
+    init:
+      mode: always
 
 server:
   port: 8080
