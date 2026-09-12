@@ -4,6 +4,16 @@ spring:
   profiles:
     active: dev
 
+app:
+  jwt:
+    # DEV-ONLY DEFAULT. Never rely on this literal value outside local
+    # dev — override with the JWT_SECRET env var everywhere else. HS256
+    # requires a key of at least 256 bits (32 bytes); this default is
+    # comfortably longer than that.
+    secret: ${JWT_SECRET:dev-only-secret-please-override-CHANGE-ME-1234567890}
+    access-token-expiration-ms: 900000       # 15 minutes
+    refresh-token-expiration-ms: 604800000   # 7 days
+
 ---
 # ------------------------------------------------------------------
 # dev profile

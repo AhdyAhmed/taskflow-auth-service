@@ -2,7 +2,7 @@
 
 A secure REST API demonstrating JWT authentication, role-based access control, and ownership-based authorization in Spring Boot. This is Project 2 of a 3-project backend portfolio (Core REST API → **Auth & Authorization** → Production-grade Booking/Order System).
 
-**Status:** 🚧 Day 4 — registration with BCrypt password hashing and a custom password-strength validator. Spring Security config, JWT, RBAC, ownership rules, and tests land over the following days (see [Roadmap](#roadmap) below).
+**Status:** 🚧 Day 5 — JWT infrastructure wired in (generation, validation, filter, stateless sessions). No login endpoint yet — RBAC, ownership rules, and tests land over the following days (see [Roadmap](#roadmap) below).
 
 ---
 
@@ -54,9 +54,9 @@ docker compose down          # stop the container, keep data
 docker compose down -v       # stop and wipe the volume (fresh DB next time)
 ```
 
-## API (Day 4)
+## API (Day 5)
 
-All endpoints are open with no auth for now (see [Design decisions](#design-decisions-living-section-updated-as-the-project-grows) — this is temporary, not an oversight).
+All endpoints are still open with no auth required (see [Design decisions](#design-decisions-living-section-updated-as-the-project-grows)). What's new today isn't an endpoint — it's that the app now runs statelessly, and `JwtAuthenticationFilter` will populate the SecurityContext from a valid Bearer access token *if* one is sent. There's no way to obtain one through the API yet — that's Day 6.
 
 | Method | Path | Notes |
 |---|---|---|
@@ -112,17 +112,28 @@ curl http://localhost:8080/api/tasks/project/1
 curl -X POST http://localhost:8080/api/projects \
   -H "Content-Type: application/json" \
   -d '{"ownerId": 1}'
+
+# JWT machinery exists but isn't enforced yet: a garbage Bearer token
+# doesn't authenticate anyone, but it also doesn't reject the request —
+# permitAll() still covers everything until Day 7-9.
+curl http://localhost:8080/api/projects -H "Authorization: Bearer not-a-real-token"
 ```
 
-## Project structure (Day 4)
+## Project structure (Day 5)
 
 ```
 src/main/java/com/ahdyahmed/taskflow/
-├── TaskflowApplication.java
+├── TaskflowApplication.java             # @ConfigurationPropertiesScan
 ├── config/
 │   ├── JpaAuditingConfig.java           # @EnableJpaAuditing
 │   ├── PasswordEncoderConfig.java       # BCryptPasswordEncoder bean
-│   └── TemporaryOpenSecurityConfig.java # permitAll() until JWT auth lands (Day 5-6)
+│   ├── JwtProperties.java               # app.jwt.* bound as a record
+│   └── SecurityConfig.java              # stateless sessions, JWT filter wired in, still permitAll()
+├── security/
+│   ├── JwtService.java                  # generate/validate access + refresh tokens
+│   ├── JwtAuthenticationFilter.java     # OncePerRequestFilter, parses Bearer tokens
+│   ├── AppUserPrincipal.java            # UserDetails wrapping the domain User
+│   └── CustomUserDetailsService.java    # UserDetailsService backed by UserRepository
 ├── controller/
 │   ├── AuthController.java              # POST /auth/register
 │   ├── ProjectController.java
@@ -162,7 +173,7 @@ src/main/java/com/ahdyahmed/taskflow/
 | 2 | Entity relationships, JPA auditing | ✅ |
 | 3 | Basic CRUD (pre-security) | ✅ |
 | 4 | Registration, BCrypt password hashing, custom password validator | ✅ |
-| 5 | Spring Security config, JWT generation/validation |  |
+| 5 | Spring Security config, JWT generation/validation | ✅ |
 | 6 | Login, refresh token, logout |  |
 | 7-9 | Role-based access control, ownership rules, edge cases |  |
 | 10-11 | Account lockout, rate limiting on auth endpoints |  |
@@ -178,8 +189,13 @@ src/main/java/com/ahdyahmed/taskflow/
 - **All associations are `FetchType.LAZY`:** loading a `Task` should never silently pull its `Project` and both `User`s along with it. Anywhere eager loading is actually wanted (e.g. a task list view), it'll be an explicit `@Query` with `JOIN FETCH` or a projection — not a change to the entity's default fetch type.
 - **`BaseEntity` for id + auditing:** `id`, `createdAt`, `updatedAt` live in one `@MappedSuperclass` so every entity gets them consistently, and adding a new entity later can't forget to wire up auditing.
 - **Equality is `id`-only:** entities use `@EqualsAndHashCode(onlyExplicitlyIncluded = true)` on just `id` (inherited via `callSuper = true`), which is the safe default for JPA — comparing every field would break as soon as lazy fields aren't loaded on one side.
-- **Security starter left wide open for now (`TemporaryOpenSecurityConfig`):** `spring-boot-starter-security` has been on the classpath since Day 1. Without an explicit `SecurityFilterChain`, Spring Boot secures every endpoint behind HTTP Basic with a random generated password — correct for production, but it would make the CRUD/auth endpoints built so far untestable before JWT auth exists. This config bean is explicitly named "Temporary" and gets replaced outright (not extended) once Day 5-6 lands.
-- **`ownerId`/`createdById` trusted from the request body:** same reasoning as above — there's no authenticated principal yet to derive them from. Called out with a doc comment directly on the affected DTO fields, not just here, so it's visible at the point of use.
+- **`SecurityConfig` replaced `TemporaryOpenSecurityConfig` outright, as promised:** the Day 1-4 placeholder is gone, not extended. Today's chain adds `JwtAuthenticationFilter` and switches to `SessionCreationPolicy.STATELESS`, but every endpoint is still `permitAll()` — there's no login endpoint yet to obtain a token (Day 6), and RBAC/ownership rules don't land until Day 7-9. This is "the JWT machinery works", not "the JWT machinery is enforced".
+- **The JWT filter fails open, not closed:** a missing, malformed, expired, or wrong-type (refresh-as-access) token just leaves the request unauthenticated — it never rejects the request itself. Enforcement is authorization's job (the `authorizeHttpRequests` rules), not the filter's; conflating the two would make the filter impossible to reason about once real access rules land Day 7-9.
+- **Access and refresh tokens carry a `type` claim:** both are HS256 JWTs signed with the same key, distinguished only by `type: "access"` / `type: "refresh"` and a different expiry. Without that claim, a leaked long-lived refresh token could be used directly as a short-lived access token — `JwtService.isAccessToken()` is checked explicitly wherever a token is expected to be an access token.
+- **`AppUserPrincipal` wraps the domain `User`, not a generic Spring Security `User`:** ownership checks on Day 7-9 can call `principal.getUser()` and get the real id/email/role immediately, instead of every `@PreAuthorize` expression re-querying `UserRepository` by username.
+- **`JwtProperties` as a `@ConfigurationProperties` record, not scattered `@Value`:** every JWT setting is declared once, is immutable, and fails fast at startup if `app.jwt.secret` is missing — instead of surfacing as an NPE the first time a token is signed.
+- **Dev-only JWT secret has a real fallback, but it's flagged loudly:** `app.jwt.secret` defaults to a hardcoded string via `${JWT_SECRET:...}` so the app runs out of the box, but the yaml comment and this note both say explicitly: override it via `JWT_SECRET` for anything beyond local dev. HS256 needs ≥256 bits (32 bytes); the default is comfortably longer.
+- **`ownerId`/`createdById` trusted from the request body:** there's no authenticated principal yet to derive them from (that changes once login exists and endpoints start reading `Authentication`). Called out with a doc comment directly on the affected DTO fields, not just here, so it's visible at the point of use.
 - **Seed data via `data.sql`:** added on Day 3 back when there was no way to create a `User` through the API at all. Now that `/auth/register` exists (Day 4), this file is technically redundant — kept anyway as a quick fixed-id fixture for manual testing, and it's a one-line removal whenever that stops being useful.
 - **PUT means full replace:** `TaskUpdateRequest`/`ProjectUpdateRequest` overwrite the fields they carry — in particular, omitting `assigneeId` on a task update clears the assignee rather than leaving it untouched. A PATCH-style partial update can be added later if that proves too blunt in practice.
 - **No mapping framework yet:** `ProjectMapper`/`TaskMapper` are hand-written, not MapStruct. At two entities with non-overlapping shapes, a mapping library is more ceremony than it saves; revisit if the DTO count grows.
@@ -189,7 +205,7 @@ src/main/java/com/ahdyahmed/taskflow/
 - **Registration confirms duplicate emails (409), login won't:** telling a signup form "that email's taken" is normal, expected UX. Login (Day 6) will deliberately return the same generic error whether the email or the password was wrong — confirming account existence there is what enables user enumeration attacks.
 - **`enabled = true` by default, temporarily:** until Day 12 wires up email verification, new accounts are usable immediately so registration → login → everything else stays testable end-to-end in the meantime. This default flips to `false` the same day the verify endpoint ships — a registered-but-unverified account existing with no way to verify it would just be broken, not more secure.
 - **`UserResponse` never carries `passwordHash`:** obvious, but worth stating — it's the kind of thing that's easy to leak by accident if a DTO ever gets built by copying entity fields instead of being deliberately composed.
-- More decisions (JWT storage strategy, lockout duration, rate-limit approach) will be documented here as each lands.
+- More decisions (refresh-token server-side storage, lockout duration, rate-limit approach) will be documented here as each lands.
 
 ## License
 
