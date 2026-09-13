@@ -2,7 +2,7 @@
 
 A secure REST API demonstrating JWT authentication, role-based access control, and ownership-based authorization in Spring Boot. This is Project 2 of a 3-project backend portfolio (Core REST API → **Auth & Authorization** → Production-grade Booking/Order System).
 
-**Status:** 🚧 Day 5 — JWT infrastructure wired in (generation, validation, filter, stateless sessions). No login endpoint yet — RBAC, ownership rules, and tests land over the following days (see [Roadmap](#roadmap) below).
+**Status:** 🚧 Day 6 — login, refresh (with rotation), and logout are live end-to-end. RBAC, ownership rules, and tests land over the following days (see [Roadmap](#roadmap) below).
 
 ---
 
@@ -54,13 +54,16 @@ docker compose down          # stop the container, keep data
 docker compose down -v       # stop and wipe the volume (fresh DB next time)
 ```
 
-## API (Day 5)
+## API (Day 6)
 
-All endpoints are still open with no auth required (see [Design decisions](#design-decisions-living-section-updated-as-the-project-grows)). What's new today isn't an endpoint — it's that the app now runs statelessly, and `JwtAuthenticationFilter` will populate the SecurityContext from a valid Bearer access token *if* one is sent. There's no way to obtain one through the API yet — that's Day 6.
+Every endpoint below is still `permitAll()` — a token from `/auth/login` isn't *required* by anything yet (that's Day 7-9). It's fully mintable, valid, and rotatable end-to-end starting today, though.
 
 | Method | Path | Notes |
 |---|---|---|
 | POST | `/auth/register` | body: `email`, `password` (min 8 chars, upper + lower + digit) — always creates a USER, role can't be self-assigned |
+| POST | `/auth/login` | body: `email`, `password` → `{accessToken, refreshToken, tokenType}` |
+| POST | `/auth/refresh` | body: `refreshToken` → a brand-new pair; the presented refresh token is revoked (single-use) |
+| POST | `/auth/logout` | body: `refreshToken` → revokes it; `204` regardless of whether the token was valid |
 | POST | `/api/projects` | body: `name`, `description?`, `ownerId` |
 | GET | `/api/projects/{id}` | |
 | GET | `/api/projects` | paginated (`?page=&size=&sort=`) |
@@ -90,9 +93,31 @@ curl -X POST http://localhost:8080/auth/register \
 curl -X POST http://localhost:8080/auth/register \
   -H "Content-Type: application/json" \
   -d '{"email": "ahdy@taskflow.dev", "password": "Sup3rSecret"}'
+
+# Log in with the account just registered
+curl -X POST http://localhost:8080/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "ahdy@taskflow.dev", "password": "Sup3rSecret"}'
+# -> {"accessToken": "...", "refreshToken": "...", "tokenType": "Bearer"}
+
+# Wrong password — same generic message as "no such account", on purpose
+curl -X POST http://localhost:8080/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "ahdy@taskflow.dev", "password": "wrongpassword"}'
+
+# Refresh (swap in the refreshToken from login) — returns a brand new pair
+# and revokes the one you just sent, so reusing it a second time now fails
+curl -X POST http://localhost:8080/auth/refresh \
+  -H "Content-Type: application/json" \
+  -d '{"refreshToken": "<paste refreshToken here>"}'
+
+# Logout — revokes the token, always 204 even if it's already invalid
+curl -i -X POST http://localhost:8080/auth/logout \
+  -H "Content-Type: application/json" \
+  -d '{"refreshToken": "<paste refreshToken here>"}'
 ```
 
-`docker compose up -d` + `mvn spring-boot:run` also seeds one user (`seed.manager@taskflow.dev`, id `1` on a fresh DB) via `data.sql` — a leftover from Day 3, kept around as a quick fixed-id fixture, though registering through `/auth/register` above works just as well now:
+`docker compose up -d` + `mvn spring-boot:run` also seeds one user (`seed.manager@taskflow.dev`, id `1` on a fresh DB) via `data.sql` — a leftover from Day 3, kept around as a quick fixed-id fixture for owning projects/tasks. It **can't log in** through `/auth/login`, though — its `password_hash` is a literal placeholder string, not a real bcrypt hash, so `BCryptPasswordEncoder.matches()` correctly rejects it as `false` rather than crashing. Use a `/auth/register` + `/auth/login` account (above) for anything auth-related.
 
 ```bash
 # Create a project owned by the seeded user
@@ -119,7 +144,7 @@ curl -X POST http://localhost:8080/api/projects \
 curl http://localhost:8080/api/projects -H "Authorization: Bearer not-a-real-token"
 ```
 
-## Project structure (Day 5)
+## Project structure (Day 6)
 
 ```
 src/main/java/com/ahdyahmed/taskflow/
@@ -128,14 +153,15 @@ src/main/java/com/ahdyahmed/taskflow/
 │   ├── JpaAuditingConfig.java           # @EnableJpaAuditing
 │   ├── PasswordEncoderConfig.java       # BCryptPasswordEncoder bean
 │   ├── JwtProperties.java               # app.jwt.* bound as a record
-│   └── SecurityConfig.java              # stateless sessions, JWT filter wired in, still permitAll()
+│   └── SecurityConfig.java              # stateless sessions, JWT filter, AuthenticationManager bean
 ├── security/
 │   ├── JwtService.java                  # generate/validate access + refresh tokens
 │   ├── JwtAuthenticationFilter.java     # OncePerRequestFilter, parses Bearer tokens
 │   ├── AppUserPrincipal.java            # UserDetails wrapping the domain User
-│   └── CustomUserDetailsService.java    # UserDetailsService backed by UserRepository
+│   ├── CustomUserDetailsService.java    # UserDetailsService backed by UserRepository
+│   └── TokenHasher.java                 # SHA-256, used for refresh-token-at-rest storage
 ├── controller/
-│   ├── AuthController.java              # POST /auth/register
+│   ├── AuthController.java              # POST /auth/register, /login, /refresh, /logout
 │   ├── ProjectController.java
 │   └── TaskController.java
 ├── service/
@@ -150,19 +176,22 @@ src/main/java/com/ahdyahmed/taskflow/
 │   ├── StrongPassword.java              # custom bean-validation annotation
 │   └── StrongPasswordValidator.java
 ├── dto/
-│   ├── request/   # RegisterRequest, ProjectCreateRequest, ProjectUpdateRequest, TaskCreateRequest, TaskUpdateRequest
-│   └── response/  # UserResponse, ProjectResponse, TaskResponse, ApiErrorResponse
+│   ├── request/   # RegisterRequest, LoginRequest, RefreshRequest, ProjectCreateRequest, ProjectUpdateRequest, TaskCreateRequest, TaskUpdateRequest
+│   └── response/  # UserResponse, AuthResponse, ProjectResponse, TaskResponse, ApiErrorResponse
 ├── exception/
 │   ├── ResourceNotFoundException.java
 │   ├── EmailAlreadyInUseException.java
+│   ├── InvalidCredentialsException.java
+│   ├── InvalidTokenException.java
 │   └── GlobalExceptionHandler.java      # @RestControllerAdvice, consistent JSON error shape
 ├── domain/
-│   ├── entity/                          # BaseEntity, User, Project, Task
+│   ├── entity/                          # BaseEntity, User, Project, Task, RefreshToken
 │   └── enums/                           # Role, TaskStatus, TaskPriority
 └── repository/
     ├── UserRepository.java
     ├── ProjectRepository.java
-    └── TaskRepository.java
+    ├── TaskRepository.java
+    └── RefreshTokenRepository.java
 ```
 
 ## Roadmap
@@ -174,7 +203,7 @@ src/main/java/com/ahdyahmed/taskflow/
 | 3 | Basic CRUD (pre-security) | ✅ |
 | 4 | Registration, BCrypt password hashing, custom password validator | ✅ |
 | 5 | Spring Security config, JWT generation/validation | ✅ |
-| 6 | Login, refresh token, logout |  |
+| 6 | Login, refresh token, logout | ✅ |
 | 7-9 | Role-based access control, ownership rules, edge cases |  |
 | 10-11 | Account lockout, rate limiting on auth endpoints |  |
 | 12-13 | Email verification, password reset (mocked email) |  |
@@ -202,10 +231,16 @@ src/main/java/com/ahdyahmed/taskflow/
 - **Global error shape:** every error — 404, validation failure, or unexpected exception — comes back as the same `ApiErrorResponse` JSON shape via `@RestControllerAdvice`. Unexpected exceptions are logged server-side with the full stack trace but never leak their message to the client.
 - **Custom `@StrongPassword` validator, not a pile of generic annotations:** the brief specifically calls for demonstrating a custom Bean Validation constraint, and `@StrongPassword` (min length + upper/lower/digit) reads clearly at the point of use on `RegisterRequest.password`, rather than being logic someone has to reconstruct from several chained annotations.
 - **No `role` field on `RegisterRequest`:** every self-registered account is hardcoded to `Role.USER` in `AuthService`. Letting the client pass its own role at signup is a classic privilege-escalation bug; assigning MANAGER/ADMIN will go through a separate, privileged path once RBAC exists (Day 7-9).
-- **Registration confirms duplicate emails (409), login won't:** telling a signup form "that email's taken" is normal, expected UX. Login (Day 6) will deliberately return the same generic error whether the email or the password was wrong — confirming account existence there is what enables user enumeration attacks.
+- **Registration confirms duplicate emails (409), login won't:** telling a signup form "that email's taken" is normal, expected UX. Login deliberately returns the same generic error whether the email or the password was wrong — confirming account existence there is what enables user enumeration attacks.
 - **`enabled = true` by default, temporarily:** until Day 12 wires up email verification, new accounts are usable immediately so registration → login → everything else stays testable end-to-end in the meantime. This default flips to `false` the same day the verify endpoint ships — a registered-but-unverified account existing with no way to verify it would just be broken, not more secure.
 - **`UserResponse` never carries `passwordHash`:** obvious, but worth stating — it's the kind of thing that's easy to leak by accident if a DTO ever gets built by copying entity fields instead of being deliberately composed.
-- More decisions (refresh-token server-side storage, lockout duration, rate-limit approach) will be documented here as each lands.
+- **Login goes through Spring's `AuthenticationManager`, not a hand-rolled password check:** `AuthService.login()` calls `authenticationManager.authenticate(...)`, which delegates to a `DaoAuthenticationProvider` built from `CustomUserDetailsService` + the `PasswordEncoder` bean. That provider checks `UserDetails.isEnabled()`/`isAccountNonLocked()` *before* it even compares passwords — so once Day 10-11 (lockout) and Day 12 (email verification) start setting those flags for real, login automatically respects them, with zero changes to `AuthService`.
+- **Every login failure produces the same `InvalidCredentialsException`:** wrong password, unknown email, disabled account, locked account (soon) — all caught as `AuthenticationException` and rethrown as one generic "Invalid email or password". Distinguishing them in the response is exactly what enables user enumeration and account-probing attacks.
+- **Refresh tokens are stored hashed (`TokenHasher.sha256Hex`), never raw:** `refresh_tokens.token_hash` is what's persisted and indexed — the same reasoning as never storing plaintext passwords. A leaked table doesn't hand out replayable tokens.
+- **Refresh rotates the token, it doesn't just extend it:** every call to `/auth/refresh` revokes the presented token and issues a brand-new pair. A stolen refresh token that gets replayed after the legitimate owner has already refreshed once simply fails — rotation turns "valid for 7 days no matter what" into "valid until first use".
+- **Logout is idempotent:** an unknown, already-revoked, or malformed `refreshToken` still returns `204`. There's no legitimate reason for a client to learn "that token wasn't valid anyway" from a logout call, and a UI retrying logout on a flaky connection shouldn't have to handle an error.
+- **The Day 3 seed user can never log in:** `data.sql`'s `password_hash` is a placeholder string, not a real bcrypt hash. `BCryptPasswordEncoder.matches()` handles that gracefully (returns `false`, doesn't throw) — worth knowing so a failed login attempt against the seed fixture doesn't look like a bug.
+- More decisions (lockout duration, rate-limit approach, email verification flow) will be documented here as each lands.
 
 ## License
 

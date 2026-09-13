@@ -4,6 +4,8 @@ import com.ahdyahmed.taskflow.security.JwtAuthenticationFilter;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
@@ -42,5 +44,21 @@ public class SecurityConfig {
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
+    }
+
+    /**
+     * Delegates to Spring's own auto-configured manager, which wires up a
+     * {@code DaoAuthenticationProvider} from the single
+     * {@code CustomUserDetailsService} + {@code PasswordEncoder} beans
+     * already in context. Used by {@code AuthService.login()} on Day 6 —
+     * and because that provider checks {@code UserDetails.isEnabled()}/
+     * {@code isAccountNonLocked()} before it even compares passwords,
+     * login automatically starts respecting account lockout (Day 10-11)
+     * and email verification (Day 12) the moment those flags are wired
+     * up, with zero changes to the login code itself.
+     */
+    @Bean
+    public AuthenticationManager authenticationManager(AuthenticationConfiguration configuration) throws Exception {
+        return configuration.getAuthenticationManager();
     }
 }
