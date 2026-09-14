@@ -16,9 +16,18 @@ import com.ahdyahmed.taskflow.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+/**
+ * Day 7: writes require MANAGER (ADMIN implied via the role hierarchy).
+ * There's no ownership carve-out for the assignee yet — even the person
+ * a task is assigned to can't update it themselves today. Day 8-9 adds
+ * {@code @PreAuthorize("hasRole('MANAGER') or @taskSecurity.isAssignee(...)")}
+ * on top of this, so a USER gains exactly the "update tasks assigned to
+ * me" right the project brief calls for, without loosening anything else.
+ */
 @Service
 @RequiredArgsConstructor
 @Transactional(readOnly = true)
@@ -29,6 +38,7 @@ public class TaskService {
     private final UserRepository userRepository;
     private final TaskMapper taskMapper;
 
+    @PreAuthorize("hasRole('MANAGER')")
     @Transactional
     public TaskResponse create(TaskCreateRequest request) {
         Project project = projectRepository.findById(request.getProjectId())
@@ -69,6 +79,7 @@ public class TaskService {
         return taskRepository.findByProject_Id(projectId, pageable).map(taskMapper::toResponse);
     }
 
+    @PreAuthorize("hasRole('MANAGER')")
     @Transactional
     public TaskResponse update(Long id, TaskUpdateRequest request) {
         Task task = getTaskOrThrow(id);
@@ -82,6 +93,7 @@ public class TaskService {
         return taskMapper.toResponse(task);
     }
 
+    @PreAuthorize("hasRole('MANAGER')")
     @Transactional
     public void delete(Long id) {
         taskRepository.delete(getTaskOrThrow(id));

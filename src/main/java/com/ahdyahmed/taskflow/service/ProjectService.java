@@ -12,6 +12,7 @@ import com.ahdyahmed.taskflow.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -21,6 +22,12 @@ import org.springframework.transaction.annotation.Transactional;
  * interface here would be ceremony without a payoff. Class-level
  * {@code @Transactional(readOnly = true)} covers the read methods;
  * write methods override it with their own {@code @Transactional}.
+ * <p>
+ * Day 7: writes require MANAGER (ADMIN implied via the role hierarchy —
+ * see {@code MethodSecurityConfig}). Reads stay unrestricted beyond
+ * "authenticated" for now — any logged-in user can view any project.
+ * That's intentionally coarse; Day 8-9 narrows it to project members via
+ * an ownership-check bean layered on top, not a rewrite of this class.
  */
 @Service
 @RequiredArgsConstructor
@@ -31,6 +38,7 @@ public class ProjectService {
     private final UserRepository userRepository;
     private final ProjectMapper projectMapper;
 
+    @PreAuthorize("hasRole('MANAGER')")
     @Transactional
     public ProjectResponse create(ProjectCreateRequest request) {
         User owner = userRepository.findById(request.getOwnerId())
@@ -54,6 +62,7 @@ public class ProjectService {
         return projectRepository.findAll(pageable).map(projectMapper::toResponse);
     }
 
+    @PreAuthorize("hasRole('MANAGER')")
     @Transactional
     public ProjectResponse update(Long id, ProjectUpdateRequest request) {
         Project project = getProjectOrThrow(id);
@@ -65,6 +74,7 @@ public class ProjectService {
         return projectMapper.toResponse(project);
     }
 
+    @PreAuthorize("hasRole('MANAGER')")
     @Transactional
     public void delete(Long id) {
         projectRepository.delete(getProjectOrThrow(id));

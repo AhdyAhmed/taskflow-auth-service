@@ -1,6 +1,8 @@
 package com.ahdyahmed.taskflow.config;
 
 import com.ahdyahmed.taskflow.security.JwtAuthenticationFilter;
+import com.ahdyahmed.taskflow.security.RestAccessDeniedHandler;
+import com.ahdyahmed.taskflow.security.RestAuthenticationEntryPoint;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -13,34 +15,43 @@ import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
 /**
- * Replaces {@code TemporaryOpenSecurityConfig} (Day 1-4) outright, as
- * promised — not extended, a clean swap.
+ * Day 7: this is where {@code permitAll()} finally goes away. Only the
+ * four endpoints that have to be reachable without a token stay open —
+ * you can't require a login to log in. Everything else now requires a
+ * valid access token at minimum (role-specific rules live as
+ * {@code @PreAuthorize} on service methods, enabled by
+ * {@link MethodSecurityConfig}, not here).
  * <p>
- * What actually changes today: the app now runs statelessly (no HTTP
- * session, so CSRF protection — which only matters for cookie-based
- * sessions — stays disabled for the same reason it always was), and
- * {@link JwtAuthenticationFilter} is wired into the chain ahead of
- * Spring's own {@link UsernamePasswordAuthenticationFilter}, so a valid
- * Bearer access token, if one is sent, populates the SecurityContext.
- * <p>
- * What does NOT change today: every endpoint is still {@code permitAll()}.
- * There's no login endpoint yet to obtain a token through the API (Day 6),
- * and role/ownership-based access rules don't land until Day 7-9. Today
- * is purely "the JWT machinery works", not "the JWT machinery is enforced".
+ * {@link RestAuthenticationEntryPoint} and {@link RestAccessDeniedHandler}
+ * are wired in so 401s (no/invalid token) and 403s (valid token, wrong
+ * role) come back in the same JSON shape as every other API error —
+ * without them, Spring Security's own default handlers would produce a
+ * plain-text or differently-shaped body for exactly these two cases.
  */
 @Configuration
 @EnableWebSecurity
 @RequiredArgsConstructor
 public class SecurityConfig {
 
+    private static final String[] PUBLIC_AUTH_ENDPOINTS = {
+            "/auth/register", "/auth/login", "/auth/refresh", "/auth/logout"
+    };
+
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
+    private final RestAuthenticationEntryPoint restAuthenticationEntryPoint;
+    private final RestAccessDeniedHandler restAccessDeniedHandler;
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http
                 .csrf(csrf -> csrf.disable())
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-                .authorizeHttpRequests(auth -> auth.anyRequest().permitAll())
+                .authorizeHttpRequests(auth -> auth
+                        .requestMatchers(PUBLIC_AUTH_ENDPOINTS).permitAll()
+                        .anyRequest().authenticated())
+                .exceptionHandling(handling -> handling
+                        .authenticationEntryPoint(restAuthenticationEntryPoint)
+                        .accessDeniedHandler(restAccessDeniedHandler))
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
@@ -50,8 +61,8 @@ public class SecurityConfig {
      * Delegates to Spring's own auto-configured manager, which wires up a
      * {@code DaoAuthenticationProvider} from the single
      * {@code CustomUserDetailsService} + {@code PasswordEncoder} beans
-     * already in context. Used by {@code AuthService.login()} on Day 6 —
-     * and because that provider checks {@code UserDetails.isEnabled()}/
+     * already in context. Used by {@code AuthService.login()} — and
+     * because that provider checks {@code UserDetails.isEnabled()}/
      * {@code isAccountNonLocked()} before it even compares passwords,
      * login automatically starts respecting account lockout (Day 10-11)
      * and email verification (Day 12) the moment those flags are wired
