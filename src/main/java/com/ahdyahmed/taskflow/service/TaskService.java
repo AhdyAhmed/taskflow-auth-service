@@ -3,6 +3,7 @@ package com.ahdyahmed.taskflow.service;
 import com.ahdyahmed.taskflow.domain.entity.Project;
 import com.ahdyahmed.taskflow.domain.entity.Task;
 import com.ahdyahmed.taskflow.domain.entity.User;
+import com.ahdyahmed.taskflow.domain.enums.Role;
 import com.ahdyahmed.taskflow.domain.enums.TaskPriority;
 import com.ahdyahmed.taskflow.domain.enums.TaskStatus;
 import com.ahdyahmed.taskflow.dto.request.TaskCreateRequest;
@@ -13,20 +14,28 @@ import com.ahdyahmed.taskflow.mapper.TaskMapper;
 import com.ahdyahmed.taskflow.repository.ProjectRepository;
 import com.ahdyahmed.taskflow.repository.TaskRepository;
 import com.ahdyahmed.taskflow.repository.UserRepository;
+import com.ahdyahmed.taskflow.security.AuthenticatedUser;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Day 7: writes require MANAGER (ADMIN implied via the role hierarchy).
- * There's no ownership carve-out for the assignee yet — even the person
- * a task is assigned to can't update it themselves today. Day 8-9 adds
- * {@code @PreAuthorize("hasRole('MANAGER') or @taskSecurity.isAssignee(...)")}
- * on top of this, so a USER gains exactly the "update tasks assigned to
- * me" right the project brief calls for, without loosening anything else.
+ * Day 8: Day 7's "any MANAGER can write to any task, anywhere" rule is
+ * gone. {@code create} still requires the MANAGER role, but now also
+ * project membership — a MANAGER can't create tasks in a project they
+ * have nothing to do with. {@code update} drops the role check entirely
+ * in favor of {@code @taskSecurity.isOwnerOrAssignee}: the task's
+ * project owner, its creator, or whoever it's assigned to — "the person
+ * a task is assigned to can update it themselves" from the Day 7 note
+ * now actually holds, and a MANAGER with no relationship to this
+ * specific task no longer gets a free pass. {@code delete} is narrower
+ * still: project owner or ADMIN only, not the creator or assignee (see
+ * {@link com.ahdyahmed.taskflow.security.TaskSecurity#isProjectOwner}).
+ * Reads are membership-scoped the same way as {@link ProjectService}.
  */
 @Service
 @RequiredArgsConstructor
@@ -38,17 +47,14 @@ public class TaskService {
     private final UserRepository userRepository;
     private final TaskMapper taskMapper;
 
-    @PreAuthorize("hasRole('MANAGER')")
+    @PreAuthorize("hasRole('ADMIN') or (hasRole('MANAGER') and @projectSecurity.isMember(#request.projectId, authentication))")
     @Transactional
-    public TaskResponse create(TaskCreateRequest request) {
+    public TaskResponse create(TaskCreateRequest request, Authentication authentication) {
         Project project = projectRepository.findById(request.getProjectId())
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "Project %d not found".formatted(request.getProjectId())));
 
-        User createdBy = userRepository.findById(request.getCreatedById())
-                .orElseThrow(() -> new ResourceNotFoundException(
-                        "User %d not found".formatted(request.getCreatedById())));
-
+        User createdBy = AuthenticatedUser.get(authentication);
         User assignee = resolveAssignee(request.getAssigneeId());
 
         Task task = Task.builder()
@@ -64,24 +70,31 @@ public class TaskService {
         return taskMapper.toResponse(taskRepository.save(task));
     }
 
-    public TaskResponse findById(Long id) {
+    @PreAuthorize("hasRole('ADMIN') or @taskSecurity.isProjectMember(#id, authentication)")
+    public TaskResponse findById(Long id, Authentication authentication) {
         return taskMapper.toResponse(getTaskOrThrow(id));
     }
 
-    public Page<TaskResponse> findAll(Pageable pageable) {
-        return taskRepository.findAll(pageable).map(taskMapper::toResponse);
+    /** Same admin-sees-all / everyone-else-sees-their-own split as {@link ProjectService#findAll}. */
+    public Page<TaskResponse> findAll(Pageable pageable, Authentication authentication) {
+        User caller = AuthenticatedUser.get(authentication);
+        Page<Task> tasks = caller.getRole() == Role.ADMIN
+                ? taskRepository.findAll(pageable)
+                : taskRepository.findAccessibleTo(caller.getId(), pageable);
+        return tasks.map(taskMapper::toResponse);
     }
 
-    public Page<TaskResponse> findByProject(Long projectId, Pageable pageable) {
+    @PreAuthorize("hasRole('ADMIN') or @projectSecurity.isMember(#projectId, authentication)")
+    public Page<TaskResponse> findByProject(Long projectId, Pageable pageable, Authentication authentication) {
         if (!projectRepository.existsById(projectId)) {
             throw new ResourceNotFoundException("Project %d not found".formatted(projectId));
         }
         return taskRepository.findByProject_Id(projectId, pageable).map(taskMapper::toResponse);
     }
 
-    @PreAuthorize("hasRole('MANAGER')")
+    @PreAuthorize("hasRole('ADMIN') or @taskSecurity.isOwnerOrAssignee(#id, authentication)")
     @Transactional
-    public TaskResponse update(Long id, TaskUpdateRequest request) {
+    public TaskResponse update(Long id, TaskUpdateRequest request, Authentication authentication) {
         Task task = getTaskOrThrow(id);
         task.setTitle(request.getTitle());
         task.setDescription(request.getDescription());
@@ -93,9 +106,9 @@ public class TaskService {
         return taskMapper.toResponse(task);
     }
 
-    @PreAuthorize("hasRole('MANAGER')")
+    @PreAuthorize("hasRole('ADMIN') or @taskSecurity.isProjectOwner(#id, authentication)")
     @Transactional
-    public void delete(Long id) {
+    public void delete(Long id, Authentication authentication) {
         taskRepository.delete(getTaskOrThrow(id));
     }
 

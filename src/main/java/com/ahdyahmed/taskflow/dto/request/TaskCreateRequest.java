@@ -9,8 +9,9 @@ import lombok.Getter;
 import lombok.Setter;
 
 /**
- * NOTE: {@code createdById} is accepted directly from the client for now —
- * same temporary caveat as {@link ProjectCreateRequest#getOwnerId()}.
+ * Day 8: {@code createdById} is gone, same fix and same reasoning as
+ * {@link ProjectCreateRequest} dropping {@code ownerId} — {@code TaskService.create}
+ * now derives {@code createdBy} from the authenticated principal.
  * {@code status}/{@code priority} are optional; the service defaults them
  * to TODO/MEDIUM when omitted.
  */
@@ -33,7 +34,4 @@ public class TaskCreateRequest {
     private Long projectId;
 
     private Long assigneeId;
-
-    @NotNull
-    private Long createdById;
 }

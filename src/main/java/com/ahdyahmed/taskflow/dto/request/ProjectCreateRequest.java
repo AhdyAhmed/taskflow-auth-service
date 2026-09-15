@@ -1,16 +1,18 @@
 package com.ahdyahmed.taskflow.dto.request;
 
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import lombok.Getter;
 import lombok.Setter;
 
 /**
- * NOTE: {@code ownerId} is accepted directly from the client for now.
- * That's temporary and deliberately called out here — once authentication
- * exists (Day 4-6), the owner will be derived from the authenticated
- * principal instead of trusted from the request body.
+ * Day 8: {@code ownerId} is gone. The Day 1/3 note that lived here said
+ * this would change "once authentication exists" — it now does:
+ * {@code ProjectService.create} derives the owner from the authenticated
+ * principal instead of trusting a client-supplied id. Letting the client
+ * name any user as owner was a privilege-escalation-adjacent bug (create
+ * a project, declare someone else the owner) in the same family as the
+ * one {@code RegisterRequest} avoids by not accepting a {@code role} field.
  */
 @Getter
 @Setter
@@ -22,7 +24,4 @@ public class ProjectCreateRequest {
 
     @Size(max = 1000)
     private String description;
-
-    @NotNull
-    private Long ownerId;
 }
