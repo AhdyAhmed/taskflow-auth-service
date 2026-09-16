@@ -15,6 +15,7 @@ import com.ahdyahmed.taskflow.repository.ProjectRepository;
 import com.ahdyahmed.taskflow.repository.TaskRepository;
 import com.ahdyahmed.taskflow.repository.UserRepository;
 import com.ahdyahmed.taskflow.security.AuthenticatedUser;
+import com.ahdyahmed.taskflow.web.SortValidation;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -22,6 +23,8 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.util.Set;
 
 /**
  * Day 8: Day 7's "any MANAGER can write to any task, anywhere" rule is
@@ -36,11 +39,19 @@ import org.springframework.transaction.annotation.Transactional;
  * still: project owner or ADMIN only, not the creator or assignee (see
  * {@link com.ahdyahmed.taskflow.security.TaskSecurity#isProjectOwner}).
  * Reads are membership-scoped the same way as {@link ProjectService}.
+ * <p>
+ * Day 9: {@link #findAll} and {@link #findByProject} validate
+ * {@code ?sort=} against {@link #SORT_PROPERTIES} — see
+ * {@link com.ahdyahmed.taskflow.web.SortValidation}.
  */
 @Service
 @RequiredArgsConstructor
 @Transactional(readOnly = true)
 public class TaskService {
+
+    /** Day 9: the only properties {@code GET /api/tasks}(/project/{id}) accepts in {@code ?sort=}. */
+    private static final Set<String> SORT_PROPERTIES =
+            Set.of("id", "title", "status", "priority", "createdAt", "updatedAt");
 
     private final TaskRepository taskRepository;
     private final ProjectRepository projectRepository;
@@ -77,6 +88,7 @@ public class TaskService {
 
     /** Same admin-sees-all / everyone-else-sees-their-own split as {@link ProjectService#findAll}. */
     public Page<TaskResponse> findAll(Pageable pageable, Authentication authentication) {
+        SortValidation.requireAllowed(pageable.getSort(), SORT_PROPERTIES);
         User caller = AuthenticatedUser.get(authentication);
         Page<Task> tasks = caller.getRole() == Role.ADMIN
                 ? taskRepository.findAll(pageable)
@@ -86,6 +98,7 @@ public class TaskService {
 
     @PreAuthorize("hasRole('ADMIN') or @projectSecurity.isMember(#projectId, authentication)")
     public Page<TaskResponse> findByProject(Long projectId, Pageable pageable, Authentication authentication) {
+        SortValidation.requireAllowed(pageable.getSort(), SORT_PROPERTIES);
         if (!projectRepository.existsById(projectId)) {
             throw new ResourceNotFoundException("Project %d not found".formatted(projectId));
         }

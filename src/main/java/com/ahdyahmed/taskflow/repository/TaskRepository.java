@@ -22,6 +22,15 @@ public interface TaskRepository extends JpaRepository<Task, Long> {
     List<Task> findByProject_IdAndStatus(Long projectId, TaskStatus status);
 
     /**
+     * Day 9: backs the member-removal guard in {@code ProjectService} —
+     * "what happens when a MANAGER removes a member who's assigned
+     * tasks?" from the roadmap. {@code DONE} tasks are excluded on
+     * purpose: a finished task's assignee is historical record, not an
+     * active obligation, so it shouldn't block removal.
+     */
+    List<Task> findByProject_IdAndAssignee_IdAndStatusNot(Long projectId, Long assigneeId, TaskStatus excludedStatus);
+
+    /**
      * Day 8: backs {@code GET /api/tasks} for non-ADMIN callers. "Accessible"
      * is broader than project membership alone — a task assigned to you is
      * yours to see even in a project you're not otherwise a member of

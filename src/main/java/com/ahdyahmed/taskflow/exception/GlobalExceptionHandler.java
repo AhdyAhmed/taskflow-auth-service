@@ -3,6 +3,7 @@ package com.ahdyahmed.taskflow.exception;
 import com.ahdyahmed.taskflow.dto.response.ApiErrorResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.mapping.PropertyReferenceException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -34,6 +35,12 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.CONFLICT, ex.getMessage(), request, null);
     }
 
+    /** Day 9: the member-removal guard — see {@code ProjectService#removeMember}. */
+    @ExceptionHandler(MemberHasActiveAssignmentsException.class)
+    public ResponseEntity<ApiErrorResponse> handleMemberHasActiveAssignments(MemberHasActiveAssignmentsException ex, HttpServletRequest request) {
+        return build(HttpStatus.CONFLICT, ex.getMessage(), request, null);
+    }
+
     @ExceptionHandler({InvalidCredentialsException.class, InvalidTokenException.class})
     public ResponseEntity<ApiErrorResponse> handleAuthFailure(RuntimeException ex, HttpServletRequest request) {
         return build(HttpStatus.UNAUTHORIZED, ex.getMessage(), request, null);
@@ -50,6 +57,17 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ApiErrorResponse> handleIllegalArgument(IllegalArgumentException ex, HttpServletRequest request) {
         return build(HttpStatus.BAD_REQUEST, ex.getMessage(), request, null);
+    }
+
+    /**
+     * Day 9: belt-and-suspenders alongside {@code SortValidation} — this
+     * only fires if an invalid sort property somehow reaches the
+     * repository layer without going through the allowlist check first
+     * (e.g. a new endpoint that forgets to call it). Same 400 either way.
+     */
+    @ExceptionHandler(PropertyReferenceException.class)
+    public ResponseEntity<ApiErrorResponse> handlePropertyReference(PropertyReferenceException ex, HttpServletRequest request) {
+        return build(HttpStatus.BAD_REQUEST, "Invalid sort property: " + ex.getPropertyName(), request, null);
     }
 
     @ExceptionHandler(Exception.class)

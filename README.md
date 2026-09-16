@@ -2,22 +2,19 @@
 
 A secure REST API demonstrating JWT authentication, role-based access control, and ownership-based authorization in Spring Boot. This is Project 2 of a 3-project backend portfolio (Core REST API → **Auth & Authorization** → Production-grade Booking/Order System).
 
-**Status:** 🚧 Day 8 — ownership and project-membership rules are enforced on top of Day 7's RBAC. Writing to a project or task now requires actually owning/being assigned to it (or being ADMIN), not just holding the MANAGER role in the abstract; reads are scoped to what each caller can see. See [What's new in Day 8](#whats-new-in-day-8) below for the details, and [Roadmap](#roadmap) for what's still ahead.
+**Status:** 🚧 Day 9 — the ownership/membership rules from Day 8 got their edge cases closed: removing a project member is now refused if they're still assigned to active work, listing endpoints validate `?sort=` instead of trusting it blindly, and the DTOs got audited for anything they shouldn't be exposing. See [What's new in Day 9](#whats-new-in-day-9) below for the details, and [Roadmap](#roadmap) for what's still ahead.
 
 ---
 
-## What's new in Day 8
+## What's new in Day 9
 
-Day 7 gave every MANAGER (and ADMIN) blanket write access to every project and task in the system. Day 8 narrows that down to actual ownership/membership — the "multi-tenant-ish part" of the roadmap:
+Day 8 shipped ownership/membership *rules*; Day 9 is the "refine + edge cases" pass the roadmap asks for before moving on — closing gaps that Day 8 knowingly left open rather than adding new features:
 
-- **Two new `@PreAuthorize` beans**, [`ProjectSecurity`](src/main/java/com/ahdyahmed/taskflow/security/ProjectSecurity.java) and [`TaskSecurity`](src/main/java/com/ahdyahmed/taskflow/security/TaskSecurity.java), express ownership/membership as reusable, individually-testable policy — the same pattern the project brief asks for instead of scattered `if` checks in controllers.
-- **Projects:** `update`/`delete` now require ADMIN or the project's own owner (was: any MANAGER, anywhere). Reads are membership-scoped: `GET /api/projects/{id}` 403s for a non-member, and `GET /api/projects` returns only projects you own or belong to (ADMIN still sees everything).
-- **Tasks:** `create` requires MANAGER **and** project membership (a manager can no longer create tasks in a project they have nothing to do with). `update` accepts the task's project owner, creator, or assignee — the assignee-can-update-their-own-task rule the Day 7 notes promised. `delete` stays narrower: project owner or ADMIN only. Reads follow the same membership-scoping as projects, with tasks assigned to you also visible even outside your own projects.
-- **Project membership is now manageable:** `POST`/`DELETE /api/projects/{id}/members/{userId}` (owner/ADMIN only) — there was no way to add a member at all before today, which would have made the membership checks above untestable.
-- **`ownerId`/`createdById` removed from the create request bodies.** Both were flagged back on Day 1/3 as temporary — trusting the client to name any user as a project's owner or a task's creator was a privilege-escalation-adjacent gap. `ProjectService.create`/`TaskService.create` now derive both from the authenticated principal instead.
-- A non-existent project/task resolves ownership/membership checks to `false` (403) rather than `true`/throwing (404) for non-admins — see the javadoc on `ProjectSecurity`/`TaskSecurity` for why that's deliberate.
+- **Member removal is refused if they're still assigned to active work.** This resolves the exact open question Day 8's README called out: "what happens when a MANAGER removes a member who's assigned tasks?" `DELETE /api/projects/{id}/members/{userId}` now returns `409 Conflict` (via the new `MemberHasActiveAssignmentsException`) if the member is still the assignee on any task in that project that isn't `DONE`. Complete or reassign those tasks first, then removal goes through. `DONE` tasks don't block it — a finished task's assignee is history, not an open obligation. See `ProjectService#removeMember`'s javadoc for the reasoning behind refusing rather than silently unassigning.
+- **Listing endpoints now validate `?sort=` before it reaches the database.** `GET /api/projects`, `GET /api/tasks`, and `GET /api/tasks/project/{id}` all accept a `sort` query param via Spring Data's `Pageable`, but nothing was stopping a client from sending `?sort=nonsense` (crashes as a raw 500 from deep inside the repository layer) or `?sort=owner.email` (silently adds an unintended JOIN). The new [`SortValidation`](src/main/java/com/ahdyahmed/taskflow/web/SortValidation.java) utility checks the requested sort against an explicit per-endpoint allowlist and rejects anything else with a clean `400`. `GlobalExceptionHandler` also picked up a direct handler for Spring Data's `PropertyReferenceException` as a fallback, in case a future endpoint forgets to call the validator.
+- **DTO audit for leaked emails/roles — the other Day 9 roadmap item.** Went through every response DTO and mapper looking for anything a caller shouldn't see: confirmed `passwordHash` never appears in any DTO or mapper (`grep -rn "passwordHash" dto/ mapper/` — nothing), confirmed `Role` only ever appears in `UserResponse`, which only `AdminUserController` (ADMIN-only) returns, and confirmed the emails that `ProjectResponse`/`TaskResponse` do expose (owner/assignee/creator) are only ever reachable by someone Day 8 already scoped to see that project or task in the first place. One related, deliberately-*not*-changed thing worth documenting here rather than treating as a bug: `POST /auth/register` returns `409` with "an account with this email already exists" for a duplicate email — meaning the endpoint does confirm whether an email is registered, unlike `/auth/login`'s intentionally generic message. That's registration usability winning over enumeration-hardening (most consumer apps make the same trade), not an oversight — see [Design decisions](#design-decisions-living-section-updated-as-the-project-grows) for the full writeup and how it differs from login.
 
-Commit for today: `feat: ownership and project-membership authorization rules`
+Commit for today: `refactor: authorization edge cases and paginated task listing`
 
 ## What this project proves
 
@@ -67,9 +64,9 @@ docker compose down          # stop the container, keep data
 docker compose down -v       # stop and wipe the volume (fresh DB next time)
 ```
 
-## API (Day 8)
+## API (Day 9)
 
-Only `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout` are public. Everything else needs `Authorization: Bearer <accessToken>` at minimum. Beyond that, most rules are no longer role-only — see the "Auth" column below, and [What's new in Day 8](#whats-new-in-day-8) for what changed from Day 7.
+Only `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout` are public. Everything else needs `Authorization: Bearer <accessToken>` at minimum. Beyond that, most rules are no longer role-only — see the "Auth" column below, and [What's new in Day 9](#whats-new-in-day-9) for what changed most recently.
 
 | Method | Path | Auth |
 |---|---|---|
@@ -79,15 +76,15 @@ Only `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout` are public
 | POST | `/auth/logout` | public |
 | POST | `/api/projects` | MANAGER+ (becomes the project's owner) |
 | GET | `/api/projects/{id}` | ADMIN, or project owner/member |
-| GET | `/api/projects` | any authenticated user — ADMIN sees all, everyone else sees their own, paginated |
+| GET | `/api/projects` | any authenticated user — ADMIN sees all, everyone else sees their own, paginated & sortable |
 | PUT | `/api/projects/{id}` | ADMIN, or project owner |
 | DELETE | `/api/projects/{id}` | ADMIN, or project owner |
 | POST | `/api/projects/{id}/members/{userId}` | ADMIN, or project owner |
-| DELETE | `/api/projects/{id}/members/{userId}` | ADMIN, or project owner |
+| DELETE | `/api/projects/{id}/members/{userId}` | ADMIN, or project owner — 409 if the member has active task assignments in this project (Day 9) |
 | POST | `/api/tasks` | MANAGER+ and a member of the target project |
 | GET | `/api/tasks/{id}` | ADMIN, or a member of the task's project |
-| GET | `/api/tasks` | any authenticated user — ADMIN sees all, everyone else sees their own, paginated |
-| GET | `/api/tasks/project/{projectId}` | ADMIN, or a member of that project, paginated |
+| GET | `/api/tasks` | any authenticated user — ADMIN sees all, everyone else sees their own, paginated & sortable |
+| GET | `/api/tasks/project/{projectId}` | ADMIN, or a member of that project, paginated & sortable |
 | PUT | `/api/tasks/{id}` | ADMIN, or the task's project owner/creator/assignee |
 | DELETE | `/api/tasks/{id}` | ADMIN, or the task's project owner |
 | GET | `/api/admin/users` | ADMIN only, paginated |
@@ -95,9 +92,13 @@ Only `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout` are public
 
 ("MANAGER+" = MANAGER or ADMIN, via the role hierarchy — see [Design decisions](#design-decisions-living-section-updated-as-the-project-grows).)
 
+**Pagination/sorting (Day 9):** every "paginated & sortable" endpoint above accepts the usual `?page=&size=&sort=` params, but `sort` is checked against a per-endpoint allowlist — see [What's new in Day 9](#whats-new-in-day-9). Projects: `id`, `name`, `createdAt`, `updatedAt`. Tasks: `id`, `title`, `status`, `priority`, `createdAt`, `updatedAt`. Anything else in `sort` comes back as `400`, not a crash.
+
 ## Full end-to-end test sequence
 
 This walks the whole API in order, from an empty database to ownership/membership enforcement, one feature area at a time. Every block is labeled with the day that introduced what it's exercising, so it doubles as a guided tour of the project's history — run it top to bottom against a fresh `docker compose up -d` + `mvn spring-boot:run`.
+
+Every command below is copy-paste runnable as-is in a POSIX-ish shell (bash/zsh/git-bash on Windows) — responses are captured into shell variables with plain `sed`, not `jq`, so there's nothing extra to install. **Run each block in the same shell session, top to bottom** — later blocks depend on variables set earlier ones. If a variable ever comes back empty (check with `echo "$ALICE_TOKEN"`), the block that set it didn't run, or didn't succeed — check the actual `curl` output above it before continuing, since every later step's 401/403 becomes meaningless if the token behind it is blank.
 
 `data.sql` seeds two fixture users on every startup:
 - `seed.manager@taskflow.dev` (id `1`) — leftover from Day 3, placeholder password hash, **can't log in**. Harmless, kept as a cheap fixture.
@@ -106,26 +107,35 @@ This walks the whole API in order, from an empty database to ownership/membershi
 ### Day 4 — registration
 
 ```bash
-# Three real accounts we'll use for the rest of the walkthrough
-curl -X POST http://localhost:8080/auth/register \
+# Three real accounts we'll use for the rest of the walkthrough. Each
+# response is captured, then its "id" field pulled out with sed instead
+# of hardcoding 3/4/5 — works the same whether the DB is freshly wiped
+# or already has other users in it.
+ALICE_REG=$(curl -s -X POST http://localhost:8080/auth/register \
   -H "Content-Type: application/json" \
-  -d '{"email": "alice@taskflow.dev", "password": "Sup3rSecret"}'   # -> id 3, will own a project
+  -d '{"email": "alice@taskflow.dev", "password": "Sup3rSecret"}')
+ALICE_ID=$(echo "$ALICE_REG" | sed -E 's/.*"id":([0-9]+).*/\1/')
+echo "Alice id: $ALICE_ID"   # sanity check — should be a number, not empty
 
-curl -X POST http://localhost:8080/auth/register \
+BOB_REG=$(curl -s -X POST http://localhost:8080/auth/register \
   -H "Content-Type: application/json" \
-  -d '{"email": "bob@taskflow.dev", "password": "Sup3rSecret"}'     # -> id 4, will be a teammate/assignee
+  -d '{"email": "bob@taskflow.dev", "password": "Sup3rSecret"}')
+BOB_ID=$(echo "$BOB_REG" | sed -E 's/.*"id":([0-9]+).*/\1/')
+echo "Bob id: $BOB_ID"
 
-curl -X POST http://localhost:8080/auth/register \
+CAROL_REG=$(curl -s -X POST http://localhost:8080/auth/register \
   -H "Content-Type: application/json" \
-  -d '{"email": "carol@taskflow.dev", "password": "Sup3rSecret"}'   # -> id 5, stays an outsider throughout
+  -d '{"email": "carol@taskflow.dev", "password": "Sup3rSecret"}')
+CAROL_ID=$(echo "$CAROL_REG" | sed -E 's/.*"id":([0-9]+).*/\1/')
+echo "Carol id: $CAROL_ID"
 
-# Weak password — rejected by the custom @StrongPassword validator
-curl -X POST http://localhost:8080/auth/register \
+# Weak password — rejected by the custom @StrongPassword validator, 400
+curl -i -X POST http://localhost:8080/auth/register \
   -H "Content-Type: application/json" \
   -d '{"email": "someone@taskflow.dev", "password": "weak"}'
 
 # Same email twice — 409 Conflict
-curl -X POST http://localhost:8080/auth/register \
+curl -i -X POST http://localhost:8080/auth/register \
   -H "Content-Type: application/json" \
   -d '{"email": "alice@taskflow.dev", "password": "Sup3rSecret"}'
 ```
@@ -133,27 +143,30 @@ curl -X POST http://localhost:8080/auth/register \
 ### Day 6 — login, refresh, logout
 
 ```bash
-curl -X POST http://localhost:8080/auth/login \
+# Same capture pattern as registration, but pulling accessToken/refreshToken
+ALICE_LOGIN=$(curl -s -X POST http://localhost:8080/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email": "alice@taskflow.dev", "password": "Sup3rSecret"}'
-# -> {"accessToken": "...", "refreshToken": "...", "tokenType": "Bearer"} — save as ALICE_TOKEN / ALICE_REFRESH
+  -d '{"email": "alice@taskflow.dev", "password": "Sup3rSecret"}')
+ALICE_TOKEN=$(echo "$ALICE_LOGIN" | sed -E 's/.*"accessToken":"([^"]+)".*/\1/')
+ALICE_REFRESH=$(echo "$ALICE_LOGIN" | sed -E 's/.*"refreshToken":"([^"]+)".*/\1/')
+echo "Alice token starts with: ${ALICE_TOKEN:0:20}..."   # sanity check — should NOT be empty
 
-curl -X POST http://localhost:8080/auth/login \
-  -H "Content-Type: application/json" -d '{"email": "bob@taskflow.dev", "password": "Sup3rSecret"}'
-# -> save as BOB_TOKEN
+BOB_LOGIN=$(curl -s -X POST http://localhost:8080/auth/login \
+  -H "Content-Type: application/json" -d '{"email": "bob@taskflow.dev", "password": "Sup3rSecret"}')
+BOB_TOKEN=$(echo "$BOB_LOGIN" | sed -E 's/.*"accessToken":"([^"]+)".*/\1/')
 
-curl -X POST http://localhost:8080/auth/login \
-  -H "Content-Type: application/json" -d '{"email": "carol@taskflow.dev", "password": "Sup3rSecret"}'
-# -> save as CAROL_TOKEN
+CAROL_LOGIN=$(curl -s -X POST http://localhost:8080/auth/login \
+  -H "Content-Type: application/json" -d '{"email": "carol@taskflow.dev", "password": "Sup3rSecret"}')
+CAROL_TOKEN=$(echo "$CAROL_LOGIN" | sed -E 's/.*"accessToken":"([^"]+)".*/\1/')
 
-# Wrong password — same generic message as "no such account", on purpose
-curl -X POST http://localhost:8080/auth/login \
+# Wrong password — same generic message as "no such account", on purpose, 401
+curl -i -X POST http://localhost:8080/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email": "alice@taskflow.dev", "password": "wrongpassword"}'
 
 # Refresh — returns a brand new pair and revokes the one just sent, so
 # reusing $ALICE_REFRESH a second time now fails
-curl -X POST http://localhost:8080/auth/refresh \
+curl -i -X POST http://localhost:8080/auth/refresh \
   -H "Content-Type: application/json" \
   -d "{\"refreshToken\": \"$ALICE_REFRESH\"}"
 
@@ -172,27 +185,29 @@ curl -i -X POST http://localhost:8080/api/projects \
   -d '{"name": "Website Redesign"}'
 
 # Log in as the seeded ADMIN — the only account that can promote anyone
-curl -X POST http://localhost:8080/auth/login \
+ADMIN_LOGIN=$(curl -s -X POST http://localhost:8080/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email": "seed.admin@taskflow.dev", "password": "Admin123!"}'
-# -> save as ADMIN_TOKEN
+  -d '{"email": "seed.admin@taskflow.dev", "password": "Admin123!"}')
+ADMIN_TOKEN=$(echo "$ADMIN_LOGIN" | sed -E 's/.*"accessToken":"([^"]+)".*/\1/')
+echo "Admin token starts with: ${ADMIN_TOKEN:0:20}..."
 
 # Promote Alice and Carol to MANAGER (Carol stays an outsider to Alice's
 # project on purpose — Day 8 below shows MANAGER alone isn't enough)
-curl -X PUT http://localhost:8080/api/admin/users/3/role \
+curl -i -X PUT http://localhost:8080/api/admin/users/$ALICE_ID/role \
   -H "Content-Type: application/json" -H "Authorization: Bearer $ADMIN_TOKEN" \
   -d '{"role": "MANAGER"}'
-curl -X PUT http://localhost:8080/api/admin/users/5/role \
+curl -i -X PUT http://localhost:8080/api/admin/users/$CAROL_ID/role \
   -H "Content-Type: application/json" -H "Authorization: Bearer $ADMIN_TOKEN" \
   -d '{"role": "MANAGER"}'
 
 # The SAME ALICE_TOKEN from before now works for a MANAGER-only endpoint —
 # roles are checked live against the DB on every request, not baked into
 # the JWT, so there's no need to log in again after a promotion
-curl -X POST http://localhost:8080/api/projects \
+PROJECT=$(curl -s -X POST http://localhost:8080/api/projects \
   -H "Content-Type: application/json" -H "Authorization: Bearer $ALICE_TOKEN" \
-  -d '{"name": "Website Redesign"}'
-# -> 201, save the returned id as PROJECT_ID (owner is Alice, taken from her token — Day 8)
+  -d '{"name": "Website Redesign"}')
+PROJECT_ID=$(echo "$PROJECT" | sed -E 's/.*"id":([0-9]+).*/\1/')
+echo "Project id: $PROJECT_ID"   # owner is Alice, taken from her token — Day 8
 
 # No token at all — 401 Unauthorized, same ApiErrorResponse shape as every other error
 curl -i http://localhost:8080/api/projects
@@ -212,17 +227,18 @@ curl -i -X PUT http://localhost:8080/api/projects/$PROJECT_ID \
   -d '{"name": "Website Redesign v2"}'
 
 # Alice (owner) adds Bob as a project member
-curl -X POST http://localhost:8080/api/projects/$PROJECT_ID/members/4 \
+curl -i -X POST http://localhost:8080/api/projects/$PROJECT_ID/members/$BOB_ID \
   -H "Authorization: Bearer $ALICE_TOKEN"
 
 # Bob can view the project now that he's a member -> 200
-curl http://localhost:8080/api/projects/$PROJECT_ID -H "Authorization: Bearer $BOB_TOKEN"
+curl -i http://localhost:8080/api/projects/$PROJECT_ID -H "Authorization: Bearer $BOB_TOKEN"
 
 # Alice creates a task in her project and assigns it to Bob
-curl -X POST http://localhost:8080/api/tasks \
+TASK=$(curl -s -X POST http://localhost:8080/api/tasks \
   -H "Content-Type: application/json" -H "Authorization: Bearer $ALICE_TOKEN" \
-  -d "{\"title\": \"Set up CI\", \"projectId\": $PROJECT_ID, \"assigneeId\": 4}"
-# -> 201, save the returned id as TASK_ID (createdBy is Alice, taken from her token — Day 8)
+  -d "{\"title\": \"Set up CI\", \"projectId\": $PROJECT_ID, \"assigneeId\": $BOB_ID}")
+TASK_ID=$(echo "$TASK" | sed -E 's/.*"id":([0-9]+).*/\1/')
+echo "Task id: $TASK_ID"   # createdBy is Alice, taken from her token — Day 8
 
 # Carol is a MANAGER but not a member of this project -> 403 creating a
 # task here too, not just editing the project itself
@@ -231,9 +247,9 @@ curl -i -X POST http://localhost:8080/api/tasks \
   -d "{\"title\": \"Sneak a task in\", \"projectId\": $PROJECT_ID}"
 
 # Bob is still plain USER, but he's the assignee -> 200, he can update his own task
-curl -X PUT http://localhost:8080/api/tasks/$TASK_ID \
+curl -i -X PUT http://localhost:8080/api/tasks/$TASK_ID \
   -H "Content-Type: application/json" -H "Authorization: Bearer $BOB_TOKEN" \
-  -d '{"title": "Set up CI", "status": "IN_PROGRESS", "assigneeId": 4}'
+  -d "{\"title\": \"Set up CI\", \"status\": \"IN_PROGRESS\", \"assigneeId\": $BOB_ID}"
 
 # Carol still can't touch it -> 403 (not the project owner, creator, or assignee)
 curl -i -X PUT http://localhost:8080/api/tasks/$TASK_ID \
@@ -247,19 +263,59 @@ curl -i -X DELETE http://localhost:8080/api/tasks/$TASK_ID -H "Authorization: Be
 curl -i -X DELETE http://localhost:8080/api/tasks/$TASK_ID -H "Authorization: Bearer $ALICE_TOKEN"
 
 # Alice removes Bob from the project
-curl -X DELETE http://localhost:8080/api/projects/$PROJECT_ID/members/4 -H "Authorization: Bearer $ALICE_TOKEN"
+curl -i -X DELETE http://localhost:8080/api/projects/$PROJECT_ID/members/$BOB_ID -H "Authorization: Bearer $ALICE_TOKEN"
 
 # Bob is back to a 403 on the project he just lost membership to
 curl -i http://localhost:8080/api/projects/$PROJECT_ID -H "Authorization: Bearer $BOB_TOKEN"
 
 # Listing projects is scoped per caller: Carol (unrelated MANAGER) doesn't
 # see Alice's project at all...
-curl http://localhost:8080/api/projects -H "Authorization: Bearer $CAROL_TOKEN"
+curl -i http://localhost:8080/api/projects -H "Authorization: Bearer $CAROL_TOKEN"
 # ...but the ADMIN sees every project in the system, including it
-curl http://localhost:8080/api/projects -H "Authorization: Bearer $ADMIN_TOKEN"
+curl -i http://localhost:8080/api/projects -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-## Project structure (Day 8)
+### Day 9 — edge cases: member removal, sort validation
+
+```bash
+# Bob was removed as a member at the end of the Day 8 block above —
+# add him back so we can test the removal guard properly this time.
+curl -i -X POST http://localhost:8080/api/projects/$PROJECT_ID/members/$BOB_ID \
+  -H "Authorization: Bearer $ALICE_TOKEN"
+
+# Alice creates a fresh task, assigned to Bob, still open
+TASK2=$(curl -s -X POST http://localhost:8080/api/tasks \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $ALICE_TOKEN" \
+  -d "{\"title\": \"Write integration tests\", \"projectId\": $PROJECT_ID, \"assigneeId\": $BOB_ID}")
+TASK2_ID=$(echo "$TASK2" | sed -E 's/.*"id":([0-9]+).*/\1/')
+echo "Task 2 id: $TASK2_ID"
+
+# Alice tries to remove Bob while he's still assigned this open task -> 409,
+# not 204 — this is the edge case the roadmap flagged and Day 8 left open
+curl -i -X DELETE http://localhost:8080/api/projects/$PROJECT_ID/members/$BOB_ID \
+  -H "Authorization: Bearer $ALICE_TOKEN"
+
+# Mark the task DONE (keeping Bob as assignee — PUT is a full replace, so
+# assigneeId has to be repeated here or it'd unassign him instead)
+curl -i -X PUT http://localhost:8080/api/tasks/$TASK2_ID \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $ALICE_TOKEN" \
+  -d "{\"title\": \"Write integration tests\", \"status\": \"DONE\", \"assigneeId\": $BOB_ID}"
+
+# A DONE task doesn't block removal -> now it succeeds
+curl -i -X DELETE http://localhost:8080/api/projects/$PROJECT_ID/members/$BOB_ID \
+  -H "Authorization: Bearer $ALICE_TOKEN"
+
+# Sorting: a normal, allowed sort -> 200
+curl -i "http://localhost:8080/api/projects?sort=name,asc" -H "Authorization: Bearer $ALICE_TOKEN"
+
+# An unsupported sort property (a relationship traversal, in this case) -> 400, not a crash
+curl -i "http://localhost:8080/api/projects?sort=owner.email,asc" -H "Authorization: Bearer $ALICE_TOKEN"
+
+# Same check on the task listing endpoint -> 400
+curl -i "http://localhost:8080/api/tasks?sort=nonsense,asc" -H "Authorization: Bearer $ALICE_TOKEN"
+```
+
+## Project structure (Day 9)
 
 ```
 src/main/java/com/ahdyahmed/taskflow/
@@ -290,8 +346,10 @@ src/main/java/com/ahdyahmed/taskflow/
 ├── service/
 │   ├── AuthService.java
 │   ├── AdminUserService.java            # class-level @PreAuthorize("hasRole('ADMIN')")
-│   ├── ProjectService.java              # Day 8: ownership/membership-scoped, not just role-scoped
-│   └── TaskService.java                 # Day 8: ownership/membership-scoped, not just role-scoped
+│   ├── ProjectService.java              # Day 8: ownership/membership-scoped; Day 9: member-removal guard + sort validation
+│   └── TaskService.java                 # Day 8: ownership/membership-scoped; Day 9: sort validation
+├── web/
+│   └── SortValidation.java              # Day 9: allowlist for client-supplied ?sort= on listing endpoints
 ├── mapper/
 │   ├── UserMapper.java
 │   ├── ProjectMapper.java
@@ -308,7 +366,8 @@ src/main/java/com/ahdyahmed/taskflow/
 │   ├── EmailAlreadyInUseException.java
 │   ├── InvalidCredentialsException.java
 │   ├── InvalidTokenException.java
-│   └── GlobalExceptionHandler.java      # @RestControllerAdvice, consistent JSON error shape
+│   ├── MemberHasActiveAssignmentsException.java  # Day 9: the member-removal guard
+│   └── GlobalExceptionHandler.java      # @RestControllerAdvice, consistent JSON error shape; Day 9: + 409/400 handlers above
 ├── domain/
 │   ├── entity/                          # BaseEntity, User, Project, Task, RefreshToken
 │   └── enums/                           # Role, TaskStatus, TaskPriority
@@ -330,7 +389,7 @@ src/main/java/com/ahdyahmed/taskflow/
 | 5 | Spring Security config, JWT generation/validation | ✅ |
 | 6 | Login, refresh token, logout | ✅ |
 | 7 | Role-based access control (RBAC), custom 401/403 handlers | ✅ |
-| 8-9 | Ownership rules, edge cases | 🚧 (Day 8 done — ownership/membership rules; Day 9 edge cases still ahead) |
+| 8-9 | Ownership rules, edge cases | ✅ |
 | 10-11 | Account lockout, rate limiting on auth endpoints |  |
 | 12-13 | Email verification, password reset (mocked email) |  |
 | 14-16 | Unit + integration tests, security test matrix |  |
@@ -380,7 +439,12 @@ src/main/java/com/ahdyahmed/taskflow/
 - **Task `delete` is narrower than `update` on purpose (Day 8):** `update` accepts the project owner, the task's creator, *or* its assignee; `delete` only accepts the project owner (or ADMIN). Being assigned a task is a reason to be able to update its status/description, not to unilaterally delete it — that stays a project-owner-level decision.
 - **Project membership management added, gated the same as project update/delete (Day 8):** `POST`/`DELETE /api/projects/{id}/members/{userId}` didn't exist before today — there was no way to add a member at all, which would have made every membership check above untestable. Both endpoints require the project's owner or ADMIN, same `@PreAuthorize` expression as `update`/`delete`, since managing who has access to a project is itself a project-level write.
 - **`findAll` branches on role in the method body instead of a second `@PreAuthorize` (Day 8):** `ProjectService.findAll`/`TaskService.findAll` return every row for ADMIN and a caller-scoped subset (via `findAccessibleTo`) for everyone else. This is filtering, not access denial — there's no "wrong" role for calling "list my projects/tasks", just a different result set — so it reads more clearly as an `if` on the caller's role than as a security-expression trick.
-- **Removing a project member doesn't touch their existing task assignments (Day 8, open question):** if Bob is removed as a member but is still the assignee on a task in that project, `TaskSecurity.isOwnerOrAssignee` still lets him update it — assignment and membership are checked independently, on purpose, so removing membership doesn't need to cascade into reassigning or blocking tasks. Whether that's the right behavior long-term (vs. auto-unassigning, or blocking removal while assignments exist) is explicitly the question Day 9's roadmap entry ("what happens when a MANAGER removes a member who's assigned tasks?") exists to settle — not decided yet.
+- **Removing a project member doesn't touch their existing task assignments (Day 8, open question):** if Bob is removed as a member but is still the assignee on a task in that project, `TaskSecurity.isOwnerOrAssignee` still lets him update it — assignment and membership are checked independently, on purpose, so removing membership doesn't need to cascade into reassigning or blocking tasks. Whether that's the right behavior long-term (vs. auto-unassigning, or blocking removal while assignments exist) is explicitly the question Day 9's roadmap entry ("what happens when a MANAGER removes a member who's assigned tasks?") exists to settle — not decided yet. **Resolved Day 9** — see below; removal is now blocked outright while active assignments exist, rather than left to silently diverge.
+- **Member removal refuses to proceed while active assignments exist, rather than auto-unassigning (Day 9):** `ProjectService.removeMember` now checks `TaskRepository.findByProject_IdAndAssignee_IdAndStatusNot(projectId, userId, DONE)` before touching the membership set, and throws (409) if that comes back non-empty. The alternative — silently detaching the assignee from those tasks so removal always succeeds — was considered and rejected: it's a data-mutating side effect the caller didn't ask for, buried inside what looks like a pure membership operation. Refusing and naming the blocking task ids in the error message puts the actual decision (reassign? wait for completion? force it some other way?) back with a human, which felt like the more honest default for a tool that doesn't yet have a product opinion on the right answer.
+- **`DONE` tasks are excluded from the removal-block check (Day 9):** only non-`DONE` tasks count as "active" for the purposes of blocking removal. A completed task's assignee field is historical record (who did this), not a live obligation — there's nothing left for them to do, so their having once been assigned shouldn't keep them stuck as a project member.
+- **Client-supplied `?sort=` is now allowlisted per endpoint instead of trusted as-is (Day 9):** Spring Data binds `Pageable`'s `sort` param straight from the query string and only resolves it against the entity at query-execution time, inside the repository layer — an invalid property previously surfaced as a raw `PropertyReferenceException`, caught only by the generic `Exception` handler and reported as a `500`. `SortValidation.requireAllowed` checks the requested sort against an explicit per-service allowlist (`ProjectService`/`TaskService`'s `SORT_PROPERTIES`) before the query ever runs, turning that into a clean `400`. It also blocks relationship-traversal sorts like `owner.email` on principle, not because anything sensitive leaks through an `ORDER BY`, but because letting a query param dictate an implicit `JOIN` isn't a shape of control this API means to expose.
+- **DTO email/role exposure audited, nothing changed (Day 9):** the roadmap's "ensure DTOs never leak other users' emails/roles unnecessarily" is deliberately phrased as an audit, and that's what today's pass was — going through every response DTO and mapper (`grep -rn "passwordHash" dto/ mapper/` confirms it never appears in either) and every place `Role` is returned (only `UserResponse`, only reachable via the ADMIN-only `AdminUserController`). Conclusion: no unnecessary exposure to fix, because Day 8 already gates who can reach `ProjectResponse`/`TaskResponse` in the first place — the emails they do expose (owner/assignee/creator) are only visible to someone already scoped to see that project or task.
+- **`/auth/register` confirms whether an email is already taken; `/auth/login` deliberately doesn't (documented Day 9, behavior unchanged since Day 4/6):** registration returns a distinct `409` for a duplicate email, which does let someone enumerate registered addresses one at a time — a real trade-off, not an oversight. It's kept because the alternative (a vague "something went wrong" on every registration attempt) makes the ordinary signup flow confusing for no real gain: an attacker who can already submit arbitrary emails to `/auth/register` learns almost the same thing more slowly by then trying to log in with a guessed password and reading timing/response differences anyway. Login stays intentionally generic (see the Day 6 entry above) because there the cost/benefit flips — confirming a valid login email materially helps a credential-stuffing attacker, in a way confirming a *registration* email doesn't help nearly as much.
 - More decisions (lockout duration, rate-limit approach, email verification flow) will be documented here as each lands.
 
 ## License
