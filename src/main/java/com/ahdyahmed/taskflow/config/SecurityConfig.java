@@ -64,9 +64,9 @@ public class SecurityConfig {
      * already in context. Used by {@code AuthService.login()} — and
      * because that provider checks {@code UserDetails.isEnabled()}/
      * {@code isAccountNonLocked()} before it even compares passwords,
-     * login automatically starts respecting account lockout (Day 10-11)
-     * and email verification (Day 12) the moment those flags are wired
-     * up, with zero changes to the login code itself.
+     * login respects account lockout (Day 10) and will respect email
+     * verification (Day 12) the moment that flag is wired up too, with
+     * zero further changes to the login code itself.
      */
     @Bean
     public AuthenticationManager authenticationManager(AuthenticationConfiguration configuration) throws Exception {

@@ -40,6 +40,7 @@ public class AuthService {
     private final JwtService jwtService;
     private final JwtProperties jwtProperties;
     private final UserMapper userMapper;
+    private final LoginAttemptService loginAttemptService;
 
     @Transactional
     public UserResponse register(RegisterRequest request) {
@@ -72,12 +73,16 @@ public class AuthService {
             principal = (AppUserPrincipal) authentication.getPrincipal();
         } catch (AuthenticationException ex) {
             // Deliberately the same message whether the email doesn't
-            // exist, the password is wrong, or (once Day 10-11 lands) the
-            // account is locked — anything more specific here is a user
-            // enumeration leak.
+            // exist, the password is wrong, or (Day 10) the account is
+            // locked — anything more specific here is a user enumeration
+            // leak. registerFailedAttempt runs in its own transaction
+            // (see LoginAttemptService) precisely so it survives the
+            // rollback this throw is about to trigger.
+            loginAttemptService.registerFailedAttempt(request.getEmail());
             throw new InvalidCredentialsException("Invalid email or password");
         }
 
+        loginAttemptService.resetFailedAttempts(principal.getUser().getId());
         return issueTokenPair(principal.getUser());
     }
 

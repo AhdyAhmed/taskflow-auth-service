@@ -6,6 +6,7 @@ import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
 
+import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.List;
 
@@ -40,11 +41,20 @@ public class AppUserPrincipal implements UserDetails {
         return user.getEmail();
     }
 
+    /**
+     * Day 10: real lockout logic, wired to {@code User.lockedUntil}. This
+     * runs as part of Spring Security's {@code PreAuthenticationChecks} —
+     * before the password is even compared — so a locked account is
+     * rejected on username alone, correct password or not. The account
+     * unlocks itself the instant {@code lockedUntil} passes; nothing has
+     * to actively clear the field for a login to succeed again (though
+     * {@code LoginAttemptService} does clean it up on the next successful
+     * login, so the row doesn't carry a stale past timestamp forever).
+     */
     @Override
     public boolean isAccountNonLocked() {
-        // Real lockout logic (failedLoginAttempts / lockedUntil) is wired
-        // up on Day 10-11; this always returns true until then.
-        return true;
+        LocalDateTime lockedUntil = user.getLockedUntil();
+        return lockedUntil == null || lockedUntil.isBefore(LocalDateTime.now());
     }
 
     @Override

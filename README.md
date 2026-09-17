@@ -2,19 +2,20 @@
 
 A secure REST API demonstrating JWT authentication, role-based access control, and ownership-based authorization in Spring Boot. This is Project 2 of a 3-project backend portfolio (Core REST API → **Auth & Authorization** → Production-grade Booking/Order System).
 
-**Status:** 🚧 Day 9 — the ownership/membership rules from Day 8 got their edge cases closed: removing a project member is now refused if they're still assigned to active work, listing endpoints validate `?sort=` instead of trusting it blindly, and the DTOs got audited for anything they shouldn't be exposing. See [What's new in Day 9](#whats-new-in-day-9) below for the details, and [Roadmap](#roadmap) for what's still ahead.
+**Status:** 🚧 Day 10 — accounts now actually lock after repeated failed logins, closing the last piece of Day 6's auth flow that was still a no-op (`AppUserPrincipal.isAccountNonLocked()` used to always return `true`). See [What's new in Day 10](#whats-new-in-day-10) below for the details, and [Roadmap](#roadmap) for what's still ahead.
 
 ---
 
-## What's new in Day 9
+## What's new in Day 10
 
-Day 8 shipped ownership/membership *rules*; Day 9 is the "refine + edge cases" pass the roadmap asks for before moving on — closing gaps that Day 8 knowingly left open rather than adding new features:
+Day 4-6 built the login flow with `User.failedLoginAttempts`/`lockedUntil` already on the entity and comments pointing at "Day 10-11" for when they'd actually do something. Today's the day:
 
-- **Member removal is refused if they're still assigned to active work.** This resolves the exact open question Day 8's README called out: "what happens when a MANAGER removes a member who's assigned tasks?" `DELETE /api/projects/{id}/members/{userId}` now returns `409 Conflict` (via the new `MemberHasActiveAssignmentsException`) if the member is still the assignee on any task in that project that isn't `DONE`. Complete or reassign those tasks first, then removal goes through. `DONE` tasks don't block it — a finished task's assignee is history, not an open obligation. See `ProjectService#removeMember`'s javadoc for the reasoning behind refusing rather than silently unassigning.
-- **Listing endpoints now validate `?sort=` before it reaches the database.** `GET /api/projects`, `GET /api/tasks`, and `GET /api/tasks/project/{id}` all accept a `sort` query param via Spring Data's `Pageable`, but nothing was stopping a client from sending `?sort=nonsense` (crashes as a raw 500 from deep inside the repository layer) or `?sort=owner.email` (silently adds an unintended JOIN). The new [`SortValidation`](src/main/java/com/ahdyahmed/taskflow/web/SortValidation.java) utility checks the requested sort against an explicit per-endpoint allowlist and rejects anything else with a clean `400`. `GlobalExceptionHandler` also picked up a direct handler for Spring Data's `PropertyReferenceException` as a fallback, in case a future endpoint forgets to call the validator.
-- **DTO audit for leaked emails/roles — the other Day 9 roadmap item.** Went through every response DTO and mapper looking for anything a caller shouldn't see: confirmed `passwordHash` never appears in any DTO or mapper (`grep -rn "passwordHash" dto/ mapper/` — nothing), confirmed `Role` only ever appears in `UserResponse`, which only `AdminUserController` (ADMIN-only) returns, and confirmed the emails that `ProjectResponse`/`TaskResponse` do expose (owner/assignee/creator) are only ever reachable by someone Day 8 already scoped to see that project or task in the first place. One related, deliberately-*not*-changed thing worth documenting here rather than treating as a bug: `POST /auth/register` returns `409` with "an account with this email already exists" for a duplicate email — meaning the endpoint does confirm whether an email is registered, unlike `/auth/login`'s intentionally generic message. That's registration usability winning over enumeration-hardening (most consumer apps make the same trade), not an oversight — see [Design decisions](#design-decisions-living-section-updated-as-the-project-grows) for the full writeup and how it differs from login.
+- **5 failed logins locks the account for 15 minutes** (both configurable — see [`LockoutProperties`](src/main/java/com/ahdyahmed/taskflow/config/LockoutProperties.java), bound from `app.security.lockout.*`). The counter resets on a successful login, and a lock that's already expired counts as a clean slate rather than needing just one more failure to re-trigger — see [`LoginAttemptService`](src/main/java/com/ahdyahmed/taskflow/service/LoginAttemptService.java)'s javadoc for that edge case.
+- **`AppUserPrincipal.isAccountNonLocked()` is wired to `User.lockedUntil` for real now.** Because Spring's `DaoAuthenticationProvider` checks this *before* comparing passwords (see `SecurityConfig`'s `authenticationManager` bean, which called this out back on Day 6), a locked account is rejected on username alone — correct password or not — with zero new logic in `AuthService.login()` itself.
+- **The failed-attempt counter is tracked in its own service, not a couple of private methods on `AuthService` — and that's load-bearing, not just tidiness.** `AuthService.login()` throws right after recording a failure, and Spring's default transaction behavior would roll that write back along with everything else in the same transaction. It needs `@Transactional(propagation = REQUIRES_NEW)` to survive — but `REQUIRES_NEW` (like every `@Transactional` variant) only takes effect through the Spring proxy for a bean, and a private method called as `this.something(...)` from inside `AuthService` bypasses that proxy entirely, silently turning the annotation into a no-op. `LoginAttemptService` being a real, separate bean is what makes `REQUIRES_NEW` actually work. Full reasoning in that class's javadoc — this is exactly the kind of thing that looks fine in a quick manual test and then quietly loses lockout data the moment it matters.
+- **Login's response stays exactly as generic as it was on Day 6** — same message, same status code, whether the email doesn't exist, the password is wrong, or the account is locked. That's the roadmap's "distinct error, without revealing whether it was the email or password" requirement: "distinct" from a raw stack trace or a 500, not distinct *per cause* — a cause-specific message (or even a different status like `423 Locked`) would let a caller learn an account exists and has failed 5 times, which is exactly the kind of thing this design already avoided for the plain wrong-password case.
 
-Commit for today: `refactor: authorization edge cases and paginated task listing`
+Commit for today: `feat: account lockout after repeated failed login attempts`
 
 ## What this project proves
 
@@ -64,14 +65,14 @@ docker compose down          # stop the container, keep data
 docker compose down -v       # stop and wipe the volume (fresh DB next time)
 ```
 
-## API (Day 9)
+## API (Day 10)
 
-Only `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout` are public. Everything else needs `Authorization: Bearer <accessToken>` at minimum. Beyond that, most rules are no longer role-only — see the "Auth" column below, and [What's new in Day 9](#whats-new-in-day-9) for what changed most recently.
+Only `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout` are public. Everything else needs `Authorization: Bearer <accessToken>` at minimum. Beyond that, most rules are no longer role-only — see the "Auth" column below, and [What's new in Day 10](#whats-new-in-day-10) for what changed most recently.
 
 | Method | Path | Auth |
 |---|---|---|
 | POST | `/auth/register` | public |
-| POST | `/auth/login` | public |
+| POST | `/auth/login` | public — locks the account for 15 min after 5 failed attempts (Day 10) |
 | POST | `/auth/refresh` | public |
 | POST | `/auth/logout` | public |
 | POST | `/api/projects` | MANAGER+ (becomes the project's owner) |
@@ -315,7 +316,36 @@ curl -i "http://localhost:8080/api/projects?sort=owner.email,asc" -H "Authorizat
 curl -i "http://localhost:8080/api/tasks?sort=nonsense,asc" -H "Authorization: Bearer $ALICE_TOKEN"
 ```
 
-## Project structure (Day 9)
+### Day 10 — account lockout
+
+```bash
+# A fresh account, independent of everything above, so we don't disturb
+# Alice's login history or any of the project/task state.
+curl -s -X POST http://localhost:8080/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email": "dave@taskflow.dev", "password": "Sup3rSecret"}' > /dev/null
+
+# 5 wrong-password attempts in a row. Each comes back 401 with the same
+# generic message as always — nothing about the response changes as the
+# account gets closer to being locked.
+for i in 1 2 3 4 5; do
+  curl -s -o /dev/null -w "attempt $i: %{http_code}\n" -X POST http://localhost:8080/auth/login \
+    -H "Content-Type: application/json" \
+    -d '{"email": "dave@taskflow.dev", "password": "wrongpassword"}'
+done
+
+# The account is locked now. A 6th attempt with the CORRECT password
+# still fails — same 401, same "Invalid email or password" message as
+# every wrong-password attempt above. Nothing in the response reveals
+# that this failure is for a different reason than the first five.
+curl -i -X POST http://localhost:8080/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "dave@taskflow.dev", "password": "Sup3rSecret"}'
+```
+
+The lockout clears itself automatically 15 minutes after that 5th failure — nothing has to be manually reset for login to work again. To see that without actually waiting 15 minutes, temporarily set `app.security.lockout.lockout-duration-minutes: 1` in `application.yml`, restart, repeat the block above, then wait ~1 minute and retry the correct-password login — it succeeds, and `failedLoginAttempts`/`lockedUntil` both clear on that successful login.
+
+## Project structure (Day 10)
 
 ```
 src/main/java/com/ahdyahmed/taskflow/
@@ -324,12 +354,13 @@ src/main/java/com/ahdyahmed/taskflow/
 │   ├── JpaAuditingConfig.java           # @EnableJpaAuditing
 │   ├── PasswordEncoderConfig.java       # BCryptPasswordEncoder bean
 │   ├── JwtProperties.java               # app.jwt.* bound as a record
+│   ├── LockoutProperties.java           # Day 10: app.security.lockout.* bound as a record
 │   ├── SecurityConfig.java              # stateless sessions, JWT filter, only /auth/* public
 │   └── MethodSecurityConfig.java        # @EnableMethodSecurity + role hierarchy (ADMIN > MANAGER > USER)
 ├── security/
 │   ├── JwtService.java                  # generate/validate access + refresh tokens
 │   ├── JwtAuthenticationFilter.java     # OncePerRequestFilter, parses Bearer tokens
-│   ├── AppUserPrincipal.java            # UserDetails wrapping the domain User
+│   ├── AppUserPrincipal.java            # UserDetails wrapping the domain User; Day 10: real isAccountNonLocked()
 │   ├── CustomUserDetailsService.java    # UserDetailsService backed by UserRepository
 │   ├── TokenHasher.java                 # SHA-256, used for refresh-token-at-rest storage
 │   ├── SecurityErrorResponseWriter.java # shared JSON error writer for 401/403
@@ -344,7 +375,8 @@ src/main/java/com/ahdyahmed/taskflow/
 │   ├── ProjectController.java           # + Day 8: POST/DELETE /{id}/members/{userId}
 │   └── TaskController.java
 ├── service/
-│   ├── AuthService.java
+│   ├── AuthService.java                 # Day 10: delegates failed-attempt tracking to LoginAttemptService
+│   ├── LoginAttemptService.java         # Day 10: lockout bookkeeping, deliberately its own bean — see javadoc
 │   ├── AdminUserService.java            # class-level @PreAuthorize("hasRole('ADMIN')")
 │   ├── ProjectService.java              # Day 8: ownership/membership-scoped; Day 9: member-removal guard + sort validation
 │   └── TaskService.java                 # Day 8: ownership/membership-scoped; Day 9: sort validation
@@ -390,7 +422,7 @@ src/main/java/com/ahdyahmed/taskflow/
 | 6 | Login, refresh token, logout | ✅ |
 | 7 | Role-based access control (RBAC), custom 401/403 handlers | ✅ |
 | 8-9 | Ownership rules, edge cases | ✅ |
-| 10-11 | Account lockout, rate limiting on auth endpoints |  |
+| 10-11 | Account lockout, rate limiting on auth endpoints | 🚧 (Day 10 done — lockout; Day 11 rate limiting still ahead) |
 | 12-13 | Email verification, password reset (mocked email) |  |
 | 14-16 | Unit + integration tests, security test matrix |  |
 | 17-18 | OpenAPI docs, architecture diagram, final README |  |
@@ -419,7 +451,7 @@ src/main/java/com/ahdyahmed/taskflow/
 - **Registration confirms duplicate emails (409), login won't:** telling a signup form "that email's taken" is normal, expected UX. Login deliberately returns the same generic error whether the email or the password was wrong — confirming account existence there is what enables user enumeration attacks.
 - **`enabled = true` by default, temporarily:** until Day 12 wires up email verification, new accounts are usable immediately so registration → login → everything else stays testable end-to-end in the meantime. This default flips to `false` the same day the verify endpoint ships — a registered-but-unverified account existing with no way to verify it would just be broken, not more secure.
 - **`UserResponse` never carries `passwordHash`:** obvious, but worth stating — it's the kind of thing that's easy to leak by accident if a DTO ever gets built by copying entity fields instead of being deliberately composed.
-- **Login goes through Spring's `AuthenticationManager`, not a hand-rolled password check:** `AuthService.login()` calls `authenticationManager.authenticate(...)`, which delegates to a `DaoAuthenticationProvider` built from `CustomUserDetailsService` + the `PasswordEncoder` bean. That provider checks `UserDetails.isEnabled()`/`isAccountNonLocked()` *before* it even compares passwords — so once Day 10-11 (lockout) and Day 12 (email verification) start setting those flags for real, login automatically respects them, with zero changes to `AuthService`.
+- **Login goes through Spring's `AuthenticationManager`, not a hand-rolled password check:** `AuthService.login()` calls `authenticationManager.authenticate(...)`, which delegates to a `DaoAuthenticationProvider` built from `CustomUserDetailsService` + the `PasswordEncoder` bean. That provider checks `UserDetails.isEnabled()`/`isAccountNonLocked()` *before* it even compares passwords — so once Day 10-11 (lockout) and Day 12 (email verification) start setting those flags for real, login automatically respects them, with zero changes to `AuthService`. **Confirmed Day 10** — `isAccountNonLocked()` is real now (see below), and `login()` needed exactly zero changes to start respecting it, as predicted here back on Day 6.
 - **Every login failure produces the same `InvalidCredentialsException`:** wrong password, unknown email, disabled account, locked account (soon) — all caught as `AuthenticationException` and rethrown as one generic "Invalid email or password". Distinguishing them in the response is exactly what enables user enumeration and account-probing attacks.
 - **Refresh tokens are stored hashed (`TokenHasher.sha256Hex`), never raw:** `refresh_tokens.token_hash` is what's persisted and indexed — the same reasoning as never storing plaintext passwords. A leaked table doesn't hand out replayable tokens.
 - **Refresh rotates the token, it doesn't just extend it:** every call to `/auth/refresh` revokes the presented token and issues a brand-new pair. A stolen refresh token that gets replayed after the legitimate owner has already refreshed once simply fails — rotation turns "valid for 7 days no matter what" into "valid until first use".
@@ -445,6 +477,10 @@ src/main/java/com/ahdyahmed/taskflow/
 - **Client-supplied `?sort=` is now allowlisted per endpoint instead of trusted as-is (Day 9):** Spring Data binds `Pageable`'s `sort` param straight from the query string and only resolves it against the entity at query-execution time, inside the repository layer — an invalid property previously surfaced as a raw `PropertyReferenceException`, caught only by the generic `Exception` handler and reported as a `500`. `SortValidation.requireAllowed` checks the requested sort against an explicit per-service allowlist (`ProjectService`/`TaskService`'s `SORT_PROPERTIES`) before the query ever runs, turning that into a clean `400`. It also blocks relationship-traversal sorts like `owner.email` on principle, not because anything sensitive leaks through an `ORDER BY`, but because letting a query param dictate an implicit `JOIN` isn't a shape of control this API means to expose.
 - **DTO email/role exposure audited, nothing changed (Day 9):** the roadmap's "ensure DTOs never leak other users' emails/roles unnecessarily" is deliberately phrased as an audit, and that's what today's pass was — going through every response DTO and mapper (`grep -rn "passwordHash" dto/ mapper/` confirms it never appears in either) and every place `Role` is returned (only `UserResponse`, only reachable via the ADMIN-only `AdminUserController`). Conclusion: no unnecessary exposure to fix, because Day 8 already gates who can reach `ProjectResponse`/`TaskResponse` in the first place — the emails they do expose (owner/assignee/creator) are only visible to someone already scoped to see that project or task.
 - **`/auth/register` confirms whether an email is already taken; `/auth/login` deliberately doesn't (documented Day 9, behavior unchanged since Day 4/6):** registration returns a distinct `409` for a duplicate email, which does let someone enumerate registered addresses one at a time — a real trade-off, not an oversight. It's kept because the alternative (a vague "something went wrong" on every registration attempt) makes the ordinary signup flow confusing for no real gain: an attacker who can already submit arbitrary emails to `/auth/register` learns almost the same thing more slowly by then trying to log in with a guessed password and reading timing/response differences anyway. Login stays intentionally generic (see the Day 6 entry above) because there the cost/benefit flips — confirming a valid login email materially helps a credential-stuffing attacker, in a way confirming a *registration* email doesn't help nearly as much.
+- **`LoginAttemptService` is a dedicated bean, not private methods on `AuthService` (Day 10):** the failed-attempt counter has to persist even though `login()` throws right after recording it, which means it needs `@Transactional(propagation = REQUIRES_NEW)` to survive the rollback that throw triggers. `REQUIRES_NEW` only works through Spring's proxy for the bean it's declared on — a private, self-invoked method (`this.registerFailedAttempt(...)`) never goes through that proxy, so the same annotation on a private `AuthService` method would silently do nothing, and every failed-login count would vanish the moment it mattered. This is a real, easy-to-miss Spring AOP gap, not a stylistic preference — see the class javadoc for the full explanation.
+- **A lock that's expired counts as a fresh start, not "one more strike" (Day 10):** if `lockedUntil` is in the past when a new failure comes in, `LoginAttemptService.registerFailedAttempt` resets the counter to 1 instead of incrementing whatever it was before locking (which would already be `maxFailedAttempts`). Without this, a single failed login any time after a lockout naturally expires would immediately re-lock the account — technically "5 failures locks you out" but in practice behaving like "1 failure locks you out, forever, in 15-minute increments" for anyone who mistypes their password even once post-lockout. An already-*active* lock still refuses to extend itself on repeated attempts, though — hammering a locked account doesn't make the lockout longer, it just keeps failing.
+- **Locked-account rejection happens on username alone, before the password is even checked (Day 10):** this is Spring Security's own `DaoAuthenticationProvider` behavior (`PreAuthenticationChecks` runs before `AdditionalAuthenticationChecks`), not something this project added — but it matters for the security story: a locked account can't be "cracked through" by someone who happens to know the real password, because the password never gets compared while the lock is active.
+- **The lockout message is identical to the Day 6 generic message, on purpose (Day 10):** the roadmap asks for "a distinct error... without revealing whether it was the email or password that was wrong," and the way this reads that requirement is: distinct from a raw error/500, not distinct *per failure cause*. A cause-specific response (a different message, or a `423 Locked` status instead of `401`) would tell an attacker two things the plain wrong-password case already withholds — that the account exists, and that it's failed 5 times recently. Same status, same body, every time.
 - More decisions (lockout duration, rate-limit approach, email verification flow) will be documented here as each lands.
 
 ## License

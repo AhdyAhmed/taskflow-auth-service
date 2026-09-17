@@ -13,6 +13,12 @@ app:
     secret: ${JWT_SECRET:dev-only-secret-please-override-CHANGE-ME-1234567890}
     access-token-expiration-ms: 900000       # 15 minutes
     refresh-token-expiration-ms: 604800000   # 7 days
+  security:
+    lockout:
+      # Day 10: 5 failed attempts locks the account for 15 minutes. Both
+      # tunable per-environment without a code change — see LockoutProperties.
+      max-failed-attempts: 5
+      lockout-duration-minutes: 15
 
 ---
 # ------------------------------------------------------------------
