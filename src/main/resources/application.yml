@@ -19,6 +19,14 @@ app:
       # tunable per-environment without a code change — see LockoutProperties.
       max-failed-attempts: 5
       lockout-duration-minutes: 15
+    rate-limit:
+      # Day 11: 20 requests per 60-second window, per (IP, path), on
+      # /auth/login and /auth/register only. Chosen generously enough
+      # that working through this README's own test sequence in one
+      # sitting doesn't trip it by accident — a real deployment would
+      # likely tune this stricter. See RateLimitingFilter.
+      capacity: 20
+      refill-duration-seconds: 60
 
 ---
 # ------------------------------------------------------------------

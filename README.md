@@ -2,18 +2,20 @@
 
 A secure REST API demonstrating JWT authentication, role-based access control, and ownership-based authorization in Spring Boot. This is Project 2 of a 3-project backend portfolio (Core REST API → **Auth & Authorization** → Production-grade Booking/Order System).
 
-**Status:** 🚧 Day 10 — accounts now actually lock after repeated failed logins, closing the last piece of Day 6's auth flow that was still a no-op (`AppUserPrincipal.isAccountNonLocked()` used to always return `true`). See [What's new in Day 10](#whats-new-in-day-10) below for the details, and [Roadmap](#roadmap) for what's still ahead.
+**Status:** 🚧 Day 11 — `/auth/login` and `/auth/register` are now rate-limited per (IP, endpoint), independent of and complementary to Day 10's per-account lockout. See [What's new in Day 11](#whats-new-in-day-11) below for the details, and [Roadmap](#roadmap) for what's still ahead.
 
 ---
 
-## What's new in Day 10
+## What's new in Day 11
 
-Day 4-6 built the login flow with `User.failedLoginAttempts`/`lockedUntil` already on the entity and comments pointing at "Day 10-11" for when they'd actually do something. Today's the day:
+Day 10 protects a specific *account* from repeated failed logins; nothing yet protected the *endpoints themselves* from being hammered — an attacker spraying different emails at `/auth/login`, or spinning up accounts at `/auth/register`, never triggers any one account's lockout. Day 11 closes that:
 
-- **5 failed logins locks the account for 15 minutes** (both configurable — see [`LockoutProperties`](src/main/java/com/ahdyahmed/taskflow/config/LockoutProperties.java), bound from `app.security.lockout.*`). The counter resets on a successful login, and a lock that's already expired counts as a clean slate rather than needing just one more failure to re-trigger — see [`LoginAttemptService`](src/main/java/com/ahdyahmed/taskflow/service/LoginAttemptService.java)'s javadoc for that edge case.
-- **`AppUserPrincipal.isAccountNonLocked()` is wired to `User.lockedUntil` for real now.** Because Spring's `DaoAuthenticationProvider` checks this *before* comparing passwords (see `SecurityConfig`'s `authenticationManager` bean, which called this out back on Day 6), a locked account is rejected on username alone — correct password or not — with zero new logic in `AuthService.login()` itself.
-- **The failed-attempt counter is tracked in its own service, not a couple of private methods on `AuthService` — and that's load-bearing, not just tidiness.** `AuthService.login()` throws right after recording a failure, and Spring's default transaction behavior would roll that write back along with everything else in the same transaction. It needs `@Transactional(propagation = REQUIRES_NEW)` to survive — but `REQUIRES_NEW` (like every `@Transactional` variant) only takes effect through the Spring proxy for a bean, and a private method called as `this.something(...)` from inside `AuthService` bypasses that proxy entirely, silently turning the annotation into a no-op. `LoginAttemptService` being a real, separate bean is what makes `REQUIRES_NEW` actually work. Full reasoning in that class's javadoc — this is exactly the kind of thing that looks fine in a quick manual test and then quietly loses lockout data the moment it matters.
-- **Login's response stays exactly as generic as it was on Day 6** — same message, same status code, whether the email doesn't exist, the password is wrong, or the account is locked. That's the roadmap's "distinct error, without revealing whether it was the email or password" requirement: "distinct" from a raw stack trace or a 500, not distinct *per cause* — a cause-specific message (or even a different status like `423 Locked`) would let a caller learn an account exists and has failed 5 times, which is exactly the kind of thing this design already avoided for the plain wrong-password case.
+- **New [`RateLimitingFilter`](src/main/java/com/ahdyahmed/taskflow/security/RateLimitingFilter.java)** — an in-memory Bucket4j token bucket per `(client IP, path)`, applied only to `/auth/login` and `/auth/register`. 20 requests per 60-second window by default, both configurable via the new [`RateLimitProperties`](src/main/java/com/ahdyahmed/taskflow/config/RateLimitProperties.java) (`app.security.rate-limit.*`) — same record-based `@ConfigurationProperties` pattern as `JwtProperties`/`LockoutProperties`. Exceeding it returns `429 Too Many Requests` with a `Retry-After` header (seconds until the next token), via the same `SecurityErrorResponseWriter` every other security-layer error already goes through.
+- **Runs ahead of JWT parsing in the filter chain** (`.addFilterBefore(rateLimitingFilter, JwtAuthenticationFilter.class)`) — a request that's about to be rejected as `429` shouldn't pay for token parsing or touch the `SecurityContext` at all.
+- **This is single-instance, in-memory, and says so out loud** — the bucket map lives in this filter's heap. Behind a load balancer with N instances, an attacker effectively gets N× the configured limit, split across whichever instance each request lands on. Fixing that means moving bucket state somewhere every instance can see (Redis, which Bucket4j supports natively) — flagged explicitly rather than left implicit, per the roadmap's own note about this exact trade-off, and matching the general shape of the refresh-token-blacklist caveat already in this README.
+- **Rate limiting and account lockout are deliberately two separate mechanisms, not one.** Rate limiting throttles *request volume* from a source, regardless of outcome; lockout locks a *specific account*, regardless of source. An attacker rotating IPs defeats rate limiting but still hits lockout on the account they're targeting; an attacker hammering many different accounts from one IP defeats lockout (no single account fails 5 times) but still hits the rate limit. Neither replaces the other.
+
+Commit for today: `feat: rate limiting on auth endpoints`
 
 Commit for today: `feat: account lockout after repeated failed login attempts`
 
@@ -65,14 +67,14 @@ docker compose down          # stop the container, keep data
 docker compose down -v       # stop and wipe the volume (fresh DB next time)
 ```
 
-## API (Day 10)
+## API (Day 11)
 
-Only `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout` are public. Everything else needs `Authorization: Bearer <accessToken>` at minimum. Beyond that, most rules are no longer role-only — see the "Auth" column below, and [What's new in Day 10](#whats-new-in-day-10) for what changed most recently.
+Only `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout` are public. Everything else needs `Authorization: Bearer <accessToken>` at minimum. Beyond that, most rules are no longer role-only — see the "Auth" column below, and [What's new in Day 11](#whats-new-in-day-11) for what changed most recently.
 
 | Method | Path | Auth |
 |---|---|---|
-| POST | `/auth/register` | public |
-| POST | `/auth/login` | public — locks the account for 15 min after 5 failed attempts (Day 10) |
+| POST | `/auth/register` | public — rate-limited to 20 req/min per IP (Day 11) |
+| POST | `/auth/login` | public — locks the account for 15 min after 5 failed attempts (Day 10); also rate-limited to 20 req/min per IP (Day 11) |
 | POST | `/auth/refresh` | public |
 | POST | `/auth/logout` | public |
 | POST | `/api/projects` | MANAGER+ (becomes the project's owner) |
@@ -94,6 +96,8 @@ Only `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout` are public
 ("MANAGER+" = MANAGER or ADMIN, via the role hierarchy — see [Design decisions](#design-decisions-living-section-updated-as-the-project-grows).)
 
 **Pagination/sorting (Day 9):** every "paginated & sortable" endpoint above accepts the usual `?page=&size=&sort=` params, but `sort` is checked against a per-endpoint allowlist — see [What's new in Day 9](#whats-new-in-day-9). Projects: `id`, `name`, `createdAt`, `updatedAt`. Tasks: `id`, `title`, `status`, `priority`, `createdAt`, `updatedAt`. Anything else in `sort` comes back as `400`, not a crash.
+
+**Rate limiting (Day 11):** `/auth/login` and `/auth/register` each allow 20 requests per 60 seconds per client IP, tracked independently of each other. Past that, the response is `429 Too Many Requests` with a `Retry-After: <seconds>` header. See [What's new in Day 11](#whats-new-in-day-11).
 
 ## Full end-to-end test sequence
 
@@ -345,7 +349,32 @@ curl -i -X POST http://localhost:8080/auth/login \
 
 The lockout clears itself automatically 15 minutes after that 5th failure — nothing has to be manually reset for login to work again. To see that without actually waiting 15 minutes, temporarily set `app.security.lockout.lockout-duration-minutes: 1` in `application.yml`, restart, repeat the block above, then wait ~1 minute and retry the correct-password login — it succeeds, and `failedLoginAttempts`/`lockedUntil` both clear on that successful login.
 
-## Project structure (Day 10)
+### Day 11 — rate limiting
+
+```bash
+# By this point in the walkthrough, /auth/register has already been hit
+# several times (Day 4, Day 10) and that consumption counts — the bucket
+# is per (IP, path) for the app's whole uptime, not reset per test block.
+# This pushes it well past its limit regardless of exactly how much
+# headroom was left; watch the status codes shift from 201/409 to 429
+# partway through. (If you're running this block on its own rather than
+# after the full walkthrough, expect the first ~20 to succeed instead.)
+for i in $(seq 1 25); do
+  curl -s -o /dev/null -w "attempt $i: %{http_code}\n" -X POST http://localhost:8080/auth/register \
+    -H "Content-Type: application/json" \
+    -d '{"email": "ratelimit-demo@taskflow.dev", "password": "Sup3rSecret"}'
+done
+
+# Once you're seeing 429s above, this shows the actual response — the
+# Retry-After header tells the caller how many seconds to back off
+curl -i -X POST http://localhost:8080/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email": "ratelimit-demo@taskflow.dev", "password": "Sup3rSecret"}'
+```
+
+`/auth/login` has its own separate bucket, keyed by path as well as IP, so it isn't affected by anything the block above just did to `/auth/register`'s. The bucket for a given (IP, path) refills gradually over the configured window rather than resetting instantly, so if you re-run the whole test sequence from the top without restarting the app, give it ~60 seconds between full runs — or just restart, which clears every in-memory bucket immediately.
+
+## Project structure (Day 11)
 
 ```
 src/main/java/com/ahdyahmed/taskflow/
@@ -355,15 +384,17 @@ src/main/java/com/ahdyahmed/taskflow/
 │   ├── PasswordEncoderConfig.java       # BCryptPasswordEncoder bean
 │   ├── JwtProperties.java               # app.jwt.* bound as a record
 │   ├── LockoutProperties.java           # Day 10: app.security.lockout.* bound as a record
-│   ├── SecurityConfig.java              # stateless sessions, JWT filter, only /auth/* public
+│   ├── RateLimitProperties.java         # Day 11: app.security.rate-limit.* bound as a record
+│   ├── SecurityConfig.java              # stateless sessions, JWT + rate-limit filters, only /auth/* public
 │   └── MethodSecurityConfig.java        # @EnableMethodSecurity + role hierarchy (ADMIN > MANAGER > USER)
 ├── security/
 │   ├── JwtService.java                  # generate/validate access + refresh tokens
 │   ├── JwtAuthenticationFilter.java     # OncePerRequestFilter, parses Bearer tokens
+│   ├── RateLimitingFilter.java          # Day 11: Bucket4j token bucket per (IP, path) on /auth/login + /auth/register
 │   ├── AppUserPrincipal.java            # UserDetails wrapping the domain User; Day 10: real isAccountNonLocked()
 │   ├── CustomUserDetailsService.java    # UserDetailsService backed by UserRepository
 │   ├── TokenHasher.java                 # SHA-256, used for refresh-token-at-rest storage
-│   ├── SecurityErrorResponseWriter.java # shared JSON error writer for 401/403
+│   ├── SecurityErrorResponseWriter.java # shared JSON error writer for 401/403/429
 │   ├── RestAuthenticationEntryPoint.java# 401 — no/invalid token
 │   ├── RestAccessDeniedHandler.java     # 403 — valid token, wrong role/not owner/not member
 │   ├── AuthenticatedUser.java           # Day 8: Authentication -> domain User, shared helper
@@ -422,7 +453,7 @@ src/main/java/com/ahdyahmed/taskflow/
 | 6 | Login, refresh token, logout | ✅ |
 | 7 | Role-based access control (RBAC), custom 401/403 handlers | ✅ |
 | 8-9 | Ownership rules, edge cases | ✅ |
-| 10-11 | Account lockout, rate limiting on auth endpoints | 🚧 (Day 10 done — lockout; Day 11 rate limiting still ahead) |
+| 10-11 | Account lockout, rate limiting on auth endpoints | ✅ |
 | 12-13 | Email verification, password reset (mocked email) |  |
 | 14-16 | Unit + integration tests, security test matrix |  |
 | 17-18 | OpenAPI docs, architecture diagram, final README |  |
@@ -481,7 +512,12 @@ src/main/java/com/ahdyahmed/taskflow/
 - **A lock that's expired counts as a fresh start, not "one more strike" (Day 10):** if `lockedUntil` is in the past when a new failure comes in, `LoginAttemptService.registerFailedAttempt` resets the counter to 1 instead of incrementing whatever it was before locking (which would already be `maxFailedAttempts`). Without this, a single failed login any time after a lockout naturally expires would immediately re-lock the account — technically "5 failures locks you out" but in practice behaving like "1 failure locks you out, forever, in 15-minute increments" for anyone who mistypes their password even once post-lockout. An already-*active* lock still refuses to extend itself on repeated attempts, though — hammering a locked account doesn't make the lockout longer, it just keeps failing.
 - **Locked-account rejection happens on username alone, before the password is even checked (Day 10):** this is Spring Security's own `DaoAuthenticationProvider` behavior (`PreAuthenticationChecks` runs before `AdditionalAuthenticationChecks`), not something this project added — but it matters for the security story: a locked account can't be "cracked through" by someone who happens to know the real password, because the password never gets compared while the lock is active.
 - **The lockout message is identical to the Day 6 generic message, on purpose (Day 10):** the roadmap asks for "a distinct error... without revealing whether it was the email or password that was wrong," and the way this reads that requirement is: distinct from a raw error/500, not distinct *per failure cause*. A cause-specific response (a different message, or a `423 Locked` status instead of `401`) would tell an attacker two things the plain wrong-password case already withholds — that the account exists, and that it's failed 5 times recently. Same status, same body, every time.
-- More decisions (lockout duration, rate-limit approach, email verification flow) will be documented here as each lands.
+- **Bucket4j over a hand-rolled counter (Day 11):** a token bucket (vs. a naive "count requests in the last N seconds" counter) allows some burstiness — a legitimate user who mistypes their password twice in quick succession isn't treated differently from one request every few seconds — while still enforcing a hard average rate over time. Rolling a custom version of this correctly (thread-safe, no race conditions on concurrent requests to the same bucket) is exactly the kind of thing worth reaching for a well-tested library over, rather than a bespoke `AtomicInteger` + timestamp scheme that looks right until it's tested under real concurrency.
+- **Rate limiting is a separate filter from the account lockout in `LoginAttemptService`, not merged into one mechanism (Day 11):** they answer different questions — "is this source making too many requests" vs. "has this specific account failed too many times" — and conflating them would mean an attacker spreading attempts across many accounts from one IP gets caught by rate limiting but never by lockout (correctly, since no single account is under attack), while an attacker rotating IPs against one account gets caught by lockout but never by rate limiting (also correctly). Keeping them independent means each does its one job without trying to also do the other's.
+- **Keyed by `(IP, path)`, not `IP` alone (Day 11):** `/auth/login` and `/auth/register` get separate budgets per client, so exhausting one doesn't block the other — someone genuinely struggling to log in shouldn't lose their ability to register a second account (or vice versa) as a side effect.
+- **In-memory and single-instance, documented rather than hidden (Day 11):** the bucket state lives in a `ConcurrentHashMap` on the filter instance. That's fine for one instance and wrong the moment there's more than one behind a load balancer — an attacker gets roughly N× the intended limit, split across instances by whichever one each request happens to hit. `RateLimitingFilter`'s javadoc calls this out explicitly and points at Redis (which Bucket4j supports natively) as the fix, matching the roadmap's own note that this would need to move to Redis in a multi-instance deployment — this project just isn't a multi-instance deployment yet.
+- **20 requests/minute, not something stricter (Day 11):** tuned partly for the actual security goal (still meaningfully throttles brute-forcing, since 20 guesses/minute is orders of magnitude below what an unthrottled endpoint allows) and partly so this README's own [test sequence](#full-end-to-end-test-sequence) — which calls `/auth/login` and `/auth/register` a couple dozen times across Day 4/6/7/10 before Day 11 even starts — can be run start to finish without accidentally tripping the limiter. Both numbers are one config change away (`app.security.rate-limit.*`) if a stricter limit is ever wanted; this is a starting point, not a claim that 20/min is the objectively correct number.
+- More decisions (email verification flow, password reset flow) will be documented here as each lands.
 
 ## License
 

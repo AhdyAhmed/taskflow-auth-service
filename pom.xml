@@ -20,6 +20,7 @@
     <properties>
         <java.version>17</java.version>
         <jjwt.version>0.12.6</jjwt.version>
+        <bucket4j.version>8.12.1</bucket4j.version>
     </properties>
 
     <dependencies>
@@ -68,6 +69,18 @@
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
+        </dependency>
+
+        <!-- Day 11: in-memory token-bucket rate limiting on /auth/login
+             and /auth/register. The jdk17 module (not plain bucket4j-core)
+             is deliberate — it uses java.time.Duration/Instant natively
+             instead of bucket4j's older custom TimeMeter abstraction,
+             which is the right pick since this project already targets
+             Java 17+ everywhere else. -->
+        <dependency>
+            <groupId>com.bucket4j</groupId>
+            <artifactId>bucket4j_jdk17-core</artifactId>
+            <version>${bucket4j.version}</version>
         </dependency>
 
         <!-- Lombok -->

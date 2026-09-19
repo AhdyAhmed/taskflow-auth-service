@@ -1,6 +1,7 @@
 package com.ahdyahmed.taskflow.config;
 
 import com.ahdyahmed.taskflow.security.JwtAuthenticationFilter;
+import com.ahdyahmed.taskflow.security.RateLimitingFilter;
 import com.ahdyahmed.taskflow.security.RestAccessDeniedHandler;
 import com.ahdyahmed.taskflow.security.RestAuthenticationEntryPoint;
 import lombok.RequiredArgsConstructor;
@@ -38,6 +39,7 @@ public class SecurityConfig {
     };
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
+    private final RateLimitingFilter rateLimitingFilter;
     private final RestAuthenticationEntryPoint restAuthenticationEntryPoint;
     private final RestAccessDeniedHandler restAccessDeniedHandler;
 
@@ -52,6 +54,10 @@ public class SecurityConfig {
                 .exceptionHandling(handling -> handling
                         .authenticationEntryPoint(restAuthenticationEntryPoint)
                         .accessDeniedHandler(restAccessDeniedHandler))
+                // Day 11: rate limiting runs first, ahead of JWT parsing —
+                // a request that's going to be rejected as 429 shouldn't
+                // pay for token parsing or touch the SecurityContext at all.
+                .addFilterBefore(rateLimitingFilter, JwtAuthenticationFilter.class)
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
