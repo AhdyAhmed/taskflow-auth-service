@@ -20,11 +20,14 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Day 11: a simple in-memory token bucket per (client IP, path), applied
- * only to {@code /auth/login} and {@code /auth/register} — the two
- * endpoints an attacker would actually want to hammer (credential
- * stuffing / account-creation spam). Every other endpoint already
- * requires a valid JWT, which is its own throttle of sorts; these two
- * are the ones reachable with nothing but a network connection.
+ * to the auth endpoints reachable without a token — {@code /auth/login}
+ * and {@code /auth/register} initially; Day 12 added
+ * {@code /auth/verify} and {@code /auth/resend-verification} to the same
+ * set, since a token-guessing or resend-spam attempt against those is
+ * exactly the kind of thing this filter already exists to slow down.
+ * Every other endpoint already requires a valid JWT, which is its own
+ * throttle of sorts; these are the ones reachable with nothing but a
+ * network connection.
  * <p>
  * <b>In-memory, single-instance only.</b> The bucket map lives in this
  * filter's heap, so it resets on restart and isn't shared across
@@ -47,7 +50,8 @@ import java.util.concurrent.ConcurrentHashMap;
 @RequiredArgsConstructor
 public class RateLimitingFilter extends OncePerRequestFilter {
 
-    private static final Set<String> RATE_LIMITED_PATHS = Set.of("/auth/login", "/auth/register");
+    private static final Set<String> RATE_LIMITED_PATHS =
+            Set.of("/auth/login", "/auth/register", "/auth/verify", "/auth/resend-verification");
 
     private final RateLimitProperties rateLimitProperties;
     private final SecurityErrorResponseWriter responseWriter;

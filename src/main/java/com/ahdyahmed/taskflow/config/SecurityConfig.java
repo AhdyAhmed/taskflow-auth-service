@@ -35,7 +35,10 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 public class SecurityConfig {
 
     private static final String[] PUBLIC_AUTH_ENDPOINTS = {
-            "/auth/register", "/auth/login", "/auth/refresh", "/auth/logout"
+            "/auth/register", "/auth/login", "/auth/refresh", "/auth/logout",
+            // Day 12: both reachable by someone who, by definition, isn't
+            // verified/logged-in yet — they have to stay open.
+            "/auth/verify", "/auth/resend-verification"
     };
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;

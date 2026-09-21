@@ -5,6 +5,9 @@ spring:
     active: dev
 
 app:
+  # Day 12: origin used to build absolute links in mocked emails (the
+  # verification link today, the Day 13 password-reset link next).
+  base-url: http://localhost:8080
   jwt:
     # DEV-ONLY DEFAULT. Never rely on this literal value outside local
     # dev — override with the JWT_SECRET env var everywhere else. HS256
@@ -27,6 +30,10 @@ app:
       # likely tune this stricter. See RateLimitingFilter.
       capacity: 20
       refill-duration-seconds: 60
+    verification:
+      # Day 12: how long a /auth/verify link stays valid after
+      # registration. See VerificationProperties.
+      token-expiration-hours: 24
 
 ---
 # ------------------------------------------------------------------

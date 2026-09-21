@@ -2,22 +2,23 @@
 
 A secure REST API demonstrating JWT authentication, role-based access control, and ownership-based authorization in Spring Boot. This is Project 2 of a 3-project backend portfolio (Core REST API → **Auth & Authorization** → Production-grade Booking/Order System).
 
-**Status:** 🚧 Day 11 — `/auth/login` and `/auth/register` are now rate-limited per (IP, endpoint), independent of and complementary to Day 10's per-account lockout. See [What's new in Day 11](#whats-new-in-day-11) below for the details, and [Roadmap](#roadmap) for what's still ahead.
+**Status:** 🚧 Day 12 — accounts now start disabled and must click a (mocked) verification link before they can log in. See [What's new in Day 12](#whats-new-in-day-12) below for the details, and [Roadmap](#roadmap) for what's still ahead.
 
 ---
 
-## What's new in Day 11
+## What's new in Day 12
 
-Day 10 protects a specific *account* from repeated failed logins; nothing yet protected the *endpoints themselves* from being hammered — an attacker spraying different emails at `/auth/login`, or spinning up accounts at `/auth/register`, never triggers any one account's lockout. Day 11 closes that:
+Every account created since Day 4 has logged in immediately after registering — `User.enabled` existed on the entity from Day 2 but `AuthService.register()` set it to `true` with a `TEMPORARY` comment pointing at today. That placeholder is gone:
 
-- **New [`RateLimitingFilter`](src/main/java/com/ahdyahmed/taskflow/security/RateLimitingFilter.java)** — an in-memory Bucket4j token bucket per `(client IP, path)`, applied only to `/auth/login` and `/auth/register`. 20 requests per 60-second window by default, both configurable via the new [`RateLimitProperties`](src/main/java/com/ahdyahmed/taskflow/config/RateLimitProperties.java) (`app.security.rate-limit.*`) — same record-based `@ConfigurationProperties` pattern as `JwtProperties`/`LockoutProperties`. Exceeding it returns `429 Too Many Requests` with a `Retry-After` header (seconds until the next token), via the same `SecurityErrorResponseWriter` every other security-layer error already goes through.
-- **Runs ahead of JWT parsing in the filter chain** (`.addFilterBefore(rateLimitingFilter, JwtAuthenticationFilter.class)`) — a request that's about to be rejected as `429` shouldn't pay for token parsing or touch the `SecurityContext` at all.
-- **This is single-instance, in-memory, and says so out loud** — the bucket map lives in this filter's heap. Behind a load balancer with N instances, an attacker effectively gets N× the configured limit, split across whichever instance each request lands on. Fixing that means moving bucket state somewhere every instance can see (Redis, which Bucket4j supports natively) — flagged explicitly rather than left implicit, per the roadmap's own note about this exact trade-off, and matching the general shape of the refresh-token-blacklist caveat already in this README.
-- **Rate limiting and account lockout are deliberately two separate mechanisms, not one.** Rate limiting throttles *request volume* from a source, regardless of outcome; lockout locks a *specific account*, regardless of source. An attacker rotating IPs defeats rate limiting but still hits lockout on the account they're targeting; an attacker hammering many different accounts from one IP defeats lockout (no single account fails 5 times) but still hits the rate limit. Neither replaces the other.
+- **New [`EmailService`](src/main/java/com/ahdyahmed/taskflow/email/EmailService.java) interface**, one method (`send(to, subject, body)`), with [`LoggingEmailService`](src/main/java/com/ahdyahmed/taskflow/email/LoggingEmailService.java) as the only implementation — it logs the email at INFO instead of sending it, exactly as the roadmap asks for. Swapping in real SMTP later means writing one new class against the same interface; nothing about how `AuthService` builds email content would need to change.
+- **`register()` now issues a verification token and stays disabled until it's used.** A `VerificationToken` (same shape as `RefreshToken` — hashed at rest, expiring, single-use) gets created, and a mocked email goes out with a link to `GET /auth/verify?token=...`. Token lifetime is configurable via the new [`VerificationProperties`](src/main/java/com/ahdyahmed/taskflow/config/VerificationProperties.java) (`app.security.verification.token-expiration-hours`, default 24h).
+- **`/auth/verify` is a `GET`, deliberately.** It's meant to be a clickable link in an email, and mutating state (flipping `enabled`) on a `GET` is a pragmatic, common break from REST purism — not an oversight. See [Design decisions](#design-decisions-living-section-updated-as-the-project-grows) for the reasoning.
+- **Unverified accounts can't log in — and get a message that actually says so**, `403` "Please verify your email before logging in," rather than the generic 401 lockout/wrong-password uses. That's a deliberate asymmetry: see `AuthService.login()`'s javadoc for why "unverified" doesn't need hiding the way "locked" and "wrong password" do, and why this path is explicitly *not* counted as a failed login attempt for Day 10's lockout.
+- **New `POST /auth/resend-verification`**, added beyond the roadmap's literal ask because a verification link that can expire with no way to get a new one is a real gap. Always `204`, regardless of whether the email exists, is already verified, or a fresh token actually got issued — the mirror image of `register()`'s duplicate-email `409`, and deliberately so (full reasoning in Design decisions).
+- **`/auth/verify` and `/auth/resend-verification` are rate-limited too**, added to Day 11's existing `RateLimitingFilter` rather than duplicating that logic — a token-guessing or resend-spam attempt against either is exactly the kind of thing that filter already exists to slow down.
+- **A real, current Spring Security CVE worth knowing about if you're relying on this pattern:** [CVE-2026-22746](https://spring.io/security/cve-2026-22746) (published April 2026, LOW severity) affects `DaoAuthenticationProvider`'s timing-attack defense for exactly the `isEnabled()`/`isAccountNonLocked()`/`isAccountNonExpired()` checks this project's Day 10 lockout and Day 12 verification both depend on — the checks themselves are unaffected, but the *timing* of the response can theoretically distinguish a locked/disabled account from a wrong-password one, undermining part of the "identical response" enumeration defense documented on Day 10. Spring Boot 3.3.5 (this project's version) ships Spring Security 6.3.4, which is in the affected range; the free OSS fix landed in 6.5.10, meaning the practical remediation is upgrading the Spring Boot line, not a patch-version bump. Noted here as a known, current limitation rather than silently left undocumented — not fixed today, since this is a portfolio project, not a production deployment, but exactly the kind of advisory a real deployment would need to track and act on.
 
-Commit for today: `feat: rate limiting on auth endpoints`
-
-Commit for today: `feat: account lockout after repeated failed login attempts`
+Commit for today: `feat: email verification flow (mocked email sender)`
 
 ## What this project proves
 
@@ -67,16 +68,18 @@ docker compose down          # stop the container, keep data
 docker compose down -v       # stop and wipe the volume (fresh DB next time)
 ```
 
-## API (Day 11)
+## API (Day 12)
 
-Only `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout` are public. Everything else needs `Authorization: Bearer <accessToken>` at minimum. Beyond that, most rules are no longer role-only — see the "Auth" column below, and [What's new in Day 11](#whats-new-in-day-11) for what changed most recently.
+Only `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout`, `/auth/verify`, and `/auth/resend-verification` are public. Everything else needs `Authorization: Bearer <accessToken>` at minimum. Beyond that, most rules are no longer role-only — see the "Auth" column below, and [What's new in Day 12](#whats-new-in-day-12) for what changed most recently.
 
 | Method | Path | Auth |
 |---|---|---|
-| POST | `/auth/register` | public — rate-limited to 20 req/min per IP (Day 11) |
-| POST | `/auth/login` | public — locks the account for 15 min after 5 failed attempts (Day 10); also rate-limited to 20 req/min per IP (Day 11) |
+| POST | `/auth/register` | public — rate-limited to 20 req/min per IP (Day 11); new account starts unverified (Day 12) |
+| POST | `/auth/login` | public — locks the account for 15 min after 5 failed attempts (Day 10); rejects unverified accounts (Day 12); rate-limited to 20 req/min per IP (Day 11) |
 | POST | `/auth/refresh` | public |
 | POST | `/auth/logout` | public |
+| GET | `/auth/verify` | public — `?token=...`, activates the account (Day 12); rate-limited |
+| POST | `/auth/resend-verification` | public — always `204`, regardless of outcome (Day 12); rate-limited |
 | POST | `/api/projects` | MANAGER+ (becomes the project's owner) |
 | GET | `/api/projects/{id}` | ADMIN, or project owner/member |
 | GET | `/api/projects` | any authenticated user — ADMIN sees all, everyone else sees their own, paginated & sortable |
@@ -98,6 +101,8 @@ Only `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout` are public
 **Pagination/sorting (Day 9):** every "paginated & sortable" endpoint above accepts the usual `?page=&size=&sort=` params, but `sort` is checked against a per-endpoint allowlist — see [What's new in Day 9](#whats-new-in-day-9). Projects: `id`, `name`, `createdAt`, `updatedAt`. Tasks: `id`, `title`, `status`, `priority`, `createdAt`, `updatedAt`. Anything else in `sort` comes back as `400`, not a crash.
 
 **Rate limiting (Day 11):** `/auth/login` and `/auth/register` each allow 20 requests per 60 seconds per client IP, tracked independently of each other. Past that, the response is `429 Too Many Requests` with a `Retry-After: <seconds>` header. See [What's new in Day 11](#whats-new-in-day-11).
+
+**Email verification (Day 12):** new accounts start disabled. `LoggingEmailService` logs the verification email to the application console instead of sending it — check server output for a line starting `Mock email — to: ...` containing the `/auth/verify?token=...` link. See [What's new in Day 12](#whats-new-in-day-12).
 
 ## Full end-to-end test sequence
 
@@ -144,6 +149,16 @@ curl -i -X POST http://localhost:8080/auth/register \
   -H "Content-Type: application/json" \
   -d '{"email": "alice@taskflow.dev", "password": "Sup3rSecret"}'
 ```
+
+> **Day 12 addition — these accounts now need verifying before Day 6's logins below will work.** Registration didn't gate login behind email verification until Day 12; the rest of this walkthrough assumes today's code, so that step has to happen here even though it's a later day's feature. See [What's new in Day 12](#whats-new-in-day-12) for the full explanation — the short version is that `alice`/`bob`/`carol` all started `enabled: false` just now, and each got a mocked verification email logged to the **application's console output**, not sent anywhere. Check the terminal running `mvn spring-boot:run` for three lines starting `Mock email — to: ...`, each containing a link like `http://localhost:8080/auth/verify?token=<uuid>`. Copy each token and verify all three accounts:
+
+```bash
+curl -i "http://localhost:8080/auth/verify?token=<ALICE_TOKEN_FROM_CONSOLE>"
+curl -i "http://localhost:8080/auth/verify?token=<BOB_TOKEN_FROM_CONSOLE>"
+curl -i "http://localhost:8080/auth/verify?token=<CAROL_TOKEN_FROM_CONSOLE>"
+```
+
+Each returns `200` with the account's `UserResponse` showing `"enabled":true`. Now Day 6 below will actually work.
 
 ### Day 6 — login, refresh, logout
 
@@ -328,7 +343,15 @@ curl -i "http://localhost:8080/api/tasks?sort=nonsense,asc" -H "Authorization: B
 curl -s -X POST http://localhost:8080/auth/register \
   -H "Content-Type: application/json" \
   -d '{"email": "dave@taskflow.dev", "password": "Sup3rSecret"}' > /dev/null
+```
 
+> **Day 12 addition — Dave needs verifying too, and it matters *why* here.** Spring Security's `PreAuthenticationChecks` run `isAccountNonLocked()` before `isEnabled()`, both before the password is ever compared. An unverified Dave would fail every attempt below with "please verify your email" (403) instead of ever reaching password comparison at all — none of the 5 attempts would count as a *failed login*, so the lockout this block exists to demonstrate would simply never trigger. Verify him first, same as Alice/Bob/Carol above (check the console for his `Mock email` line):
+
+```bash
+curl -i "http://localhost:8080/auth/verify?token=<DAVE_TOKEN_FROM_CONSOLE>"
+```
+
+```bash
 # 5 wrong-password attempts in a row. Each comes back 401 with the same
 # generic message as always — nothing about the response changes as the
 # account gets closer to being locked.
@@ -374,7 +397,45 @@ curl -i -X POST http://localhost:8080/auth/register \
 
 `/auth/login` has its own separate bucket, keyed by path as well as IP, so it isn't affected by anything the block above just did to `/auth/register`'s. The bucket for a given (IP, path) refills gradually over the configured window rather than resetting instantly, so if you re-run the whole test sequence from the top without restarting the app, give it ~60 seconds between full runs — or just restart, which clears every in-memory bucket immediately.
 
-## Project structure (Day 11)
+### Day 12 — email verification
+
+```bash
+# ratelimit-demo@taskflow.dev was registered back in Day 11's block
+# (its very first iteration, before the rate limit kicked in) and never
+# verified. Logging in with the right password still fails — 403, not
+# 401, and a message that actually explains why.
+curl -i -X POST http://localhost:8080/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "ratelimit-demo@taskflow.dev", "password": "Sup3rSecret"}'
+```
+
+Check the console running `mvn spring-boot:run` for this account's `Mock email — to: ratelimit-demo@taskflow.dev ...` line and copy its token, same as the Day 4/Day 10 additions above:
+
+```bash
+curl -i "http://localhost:8080/auth/verify?token=<RATELIMIT_DEMO_TOKEN_FROM_CONSOLE>"
+# -> 200, {"enabled":true, ...}
+
+# The exact same login call that returned 403 a moment ago now succeeds
+curl -i -X POST http://localhost:8080/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "ratelimit-demo@taskflow.dev", "password": "Sup3rSecret"}'
+```
+
+Resend-verification always looks the same from the outside — whether the account is already verified (as ratelimit-demo now is) or doesn't exist at all:
+
+```bash
+curl -i -X POST http://localhost:8080/auth/resend-verification \
+  -H "Content-Type: application/json" \
+  -d '{"email": "ratelimit-demo@taskflow.dev"}'
+# -> 204, no new email logged (already verified, so issueVerificationToken never runs)
+
+curl -i -X POST http://localhost:8080/auth/resend-verification \
+  -H "Content-Type: application/json" \
+  -d '{"email": "totally-fake-address@taskflow.dev"}'
+# -> 204, identical response — no way to tell these two calls apart from the outside
+```
+
+## Project structure (Day 12)
 
 ```
 src/main/java/com/ahdyahmed/taskflow/
@@ -382,18 +443,23 @@ src/main/java/com/ahdyahmed/taskflow/
 ├── config/
 │   ├── JpaAuditingConfig.java           # @EnableJpaAuditing
 │   ├── PasswordEncoderConfig.java       # BCryptPasswordEncoder bean
+│   ├── AppProperties.java               # Day 12: app.base-url bound as a record
 │   ├── JwtProperties.java               # app.jwt.* bound as a record
 │   ├── LockoutProperties.java           # Day 10: app.security.lockout.* bound as a record
 │   ├── RateLimitProperties.java         # Day 11: app.security.rate-limit.* bound as a record
+│   ├── VerificationProperties.java      # Day 12: app.security.verification.* bound as a record
 │   ├── SecurityConfig.java              # stateless sessions, JWT + rate-limit filters, only /auth/* public
 │   └── MethodSecurityConfig.java        # @EnableMethodSecurity + role hierarchy (ADMIN > MANAGER > USER)
+├── email/
+│   ├── EmailService.java                # Day 12: send(to, subject, body) — transport-only interface
+│   └── LoggingEmailService.java         # Day 12: the only impl — logs instead of sending
 ├── security/
 │   ├── JwtService.java                  # generate/validate access + refresh tokens
 │   ├── JwtAuthenticationFilter.java     # OncePerRequestFilter, parses Bearer tokens
-│   ├── RateLimitingFilter.java          # Day 11: Bucket4j token bucket per (IP, path) on /auth/login + /auth/register
-│   ├── AppUserPrincipal.java            # UserDetails wrapping the domain User; Day 10: real isAccountNonLocked()
+│   ├── RateLimitingFilter.java          # Day 11: Bucket4j token bucket per (IP, path); Day 12: + /auth/verify, /auth/resend-verification
+│   ├── AppUserPrincipal.java            # UserDetails wrapping the domain User; Day 10: real isAccountNonLocked(); Day 12: real isEnabled()
 │   ├── CustomUserDetailsService.java    # UserDetailsService backed by UserRepository
-│   ├── TokenHasher.java                 # SHA-256, used for refresh-token-at-rest storage
+│   ├── TokenHasher.java                 # SHA-256, used for refresh/verification-token-at-rest storage
 │   ├── SecurityErrorResponseWriter.java # shared JSON error writer for 401/403/429
 │   ├── RestAuthenticationEntryPoint.java# 401 — no/invalid token
 │   ├── RestAccessDeniedHandler.java     # 403 — valid token, wrong role/not owner/not member
@@ -401,12 +467,12 @@ src/main/java/com/ahdyahmed/taskflow/
 │   ├── ProjectSecurity.java             # Day 8: @projectSecurity.isOwner/isMember for @PreAuthorize
 │   └── TaskSecurity.java                # Day 8: @taskSecurity.isOwnerOrAssignee/isProjectOwner/isProjectMember
 ├── controller/
-│   ├── AuthController.java              # POST /auth/register, /login, /refresh, /logout
+│   ├── AuthController.java              # POST /auth/register, /login, /refresh, /logout; Day 12: + GET /verify, POST /resend-verification
 │   ├── AdminUserController.java         # ADMIN-only: list users, change role
 │   ├── ProjectController.java           # + Day 8: POST/DELETE /{id}/members/{userId}
 │   └── TaskController.java
 ├── service/
-│   ├── AuthService.java                 # Day 10: delegates failed-attempt tracking to LoginAttemptService
+│   ├── AuthService.java                 # Day 10: delegates failed-attempt tracking to LoginAttemptService; Day 12: verification flow
 │   ├── LoginAttemptService.java         # Day 10: lockout bookkeeping, deliberately its own bean — see javadoc
 │   ├── AdminUserService.java            # class-level @PreAuthorize("hasRole('ADMIN')")
 │   ├── ProjectService.java              # Day 8: ownership/membership-scoped; Day 9: member-removal guard + sort validation
@@ -421,24 +487,27 @@ src/main/java/com/ahdyahmed/taskflow/
 │   ├── StrongPassword.java              # custom bean-validation annotation
 │   └── StrongPasswordValidator.java
 ├── dto/
-│   ├── request/   # RegisterRequest, LoginRequest, RefreshRequest, ChangeRoleRequest, ProjectCreateRequest, ProjectUpdateRequest, TaskCreateRequest, TaskUpdateRequest
+│   ├── request/   # RegisterRequest, LoginRequest, RefreshRequest, ChangeRoleRequest, EmailRequest, ProjectCreateRequest, ProjectUpdateRequest, TaskCreateRequest, TaskUpdateRequest
 │   │              # (Day 8: ProjectCreateRequest/TaskCreateRequest no longer take ownerId/createdById — derived from the authenticated principal)
+│   │              # (Day 12: EmailRequest backs /auth/resend-verification, and Day 13's /auth/forgot-password)
 │   └── response/  # UserResponse, AuthResponse, ProjectResponse, TaskResponse, ApiErrorResponse
 ├── exception/
 │   ├── ResourceNotFoundException.java
 │   ├── EmailAlreadyInUseException.java
 │   ├── InvalidCredentialsException.java
 │   ├── InvalidTokenException.java
+│   ├── AccountNotVerifiedException.java # Day 12: unverified-account login rejection
 │   ├── MemberHasActiveAssignmentsException.java  # Day 9: the member-removal guard
-│   └── GlobalExceptionHandler.java      # @RestControllerAdvice, consistent JSON error shape; Day 9: + 409/400 handlers above
+│   └── GlobalExceptionHandler.java      # @RestControllerAdvice, consistent JSON error shape; Day 9/12: + 409/403/400 handlers above
 ├── domain/
-│   ├── entity/                          # BaseEntity, User, Project, Task, RefreshToken
+│   ├── entity/                          # BaseEntity, User, Project, Task, RefreshToken, VerificationToken
 │   └── enums/                           # Role, TaskStatus, TaskPriority
 └── repository/
     ├── UserRepository.java
     ├── ProjectRepository.java
     ├── TaskRepository.java
-    └── RefreshTokenRepository.java
+    ├── RefreshTokenRepository.java
+    └── VerificationTokenRepository.java # Day 12
 ```
 
 ## Roadmap
@@ -454,7 +523,7 @@ src/main/java/com/ahdyahmed/taskflow/
 | 7 | Role-based access control (RBAC), custom 401/403 handlers | ✅ |
 | 8-9 | Ownership rules, edge cases | ✅ |
 | 10-11 | Account lockout, rate limiting on auth endpoints | ✅ |
-| 12-13 | Email verification, password reset (mocked email) |  |
+| 12-13 | Email verification, password reset (mocked email) | 🚧 (Day 12 done — email verification; Day 13 password reset still ahead) |
 | 14-16 | Unit + integration tests, security test matrix |  |
 | 17-18 | OpenAPI docs, architecture diagram, final README |  |
 
@@ -517,7 +586,14 @@ src/main/java/com/ahdyahmed/taskflow/
 - **Keyed by `(IP, path)`, not `IP` alone (Day 11):** `/auth/login` and `/auth/register` get separate budgets per client, so exhausting one doesn't block the other — someone genuinely struggling to log in shouldn't lose their ability to register a second account (or vice versa) as a side effect.
 - **In-memory and single-instance, documented rather than hidden (Day 11):** the bucket state lives in a `ConcurrentHashMap` on the filter instance. That's fine for one instance and wrong the moment there's more than one behind a load balancer — an attacker gets roughly N× the intended limit, split across instances by whichever one each request happens to hit. `RateLimitingFilter`'s javadoc calls this out explicitly and points at Redis (which Bucket4j supports natively) as the fix, matching the roadmap's own note that this would need to move to Redis in a multi-instance deployment — this project just isn't a multi-instance deployment yet.
 - **20 requests/minute, not something stricter (Day 11):** tuned partly for the actual security goal (still meaningfully throttles brute-forcing, since 20 guesses/minute is orders of magnitude below what an unthrottled endpoint allows) and partly so this README's own [test sequence](#full-end-to-end-test-sequence) — which calls `/auth/login` and `/auth/register` a couple dozen times across Day 4/6/7/10 before Day 11 even starts — can be run start to finish without accidentally tripping the limiter. Both numbers are one config change away (`app.security.rate-limit.*`) if a stricter limit is ever wanted; this is a starting point, not a claim that 20/min is the objectively correct number.
-- More decisions (email verification flow, password reset flow) will be documented here as each lands.
+- **`EmailService` is transport-only; content-building stays in `AuthService` (Day 12):** the interface is exactly `send(to, subject, body)` — no `sendVerificationEmail(...)`, no knowledge of tokens or links. Putting content-building in the interface would mean every new kind of email (verification today, password reset on Day 13, maybe others later) needs either a new interface method or a generic "template + params" scheme bolted on. Keeping the interface dumb means `LoggingEmailService` never has to change, and a future real implementation (SMTP, SES, Postmark, whatever) only ever has to solve "deliver this text," never "understand what this project's emails mean."
+- **Verification tokens follow `RefreshToken`'s exact shape — hashed at rest, expiring, single-use (Day 12):** `VerificationToken` is structurally the same entity with `used` playing `RefreshToken.revoked`'s role. This is reuse of an already-reasoned-through pattern (see the Day 6 `TokenHasher` note), not a coincidence — there was no reason to invent a second way to represent "a server-issued, one-time, expiring credential" when one already existed and was already correct.
+- **`GET /auth/verify` mutates state, which breaks strict REST semantics on purpose (Day 12):** a verification link has to be clickable directly from an email client, and a link triggers a `GET` — there's no realistic way to make "click this link" issue a `POST` instead. This is the same trade-off essentially every mainstream email-verification flow (Google, GitHub, etc.) makes; flagging it here rather than pretending the API is purely RESTful everywhere.
+- **Unverified-account login gets its own message, breaking from the "always generic" pattern lockout established (Day 12):** Day 10 was explicit that locked-vs-wrong-password shouldn't be distinguishable, because the distinction is attack-relevant (it tells an attacker they've found a real, actively-targeted account). "This account isn't verified yet" is a different kind of fact — it's not learned by guessing passwords (the check runs before the password is even compared, so it fires on a correct password too), and Day 9 already established that `register()`'s 409 reveals email existence anyway. The incremental leak from also revealing "and it's unverified" is small and not attack-useful, while hiding it would make onboarding confusing for zero security benefit. Also why this path is explicitly excluded from `LoginAttemptService.registerFailedAttempt` — presenting the *correct* password isn't credential-guessing behavior and shouldn't accumulate toward a lockout.
+- **`/auth/resend-verification` always returns `204`, the mirror image of `register()`'s honest `409` (Day 12):** register has a real, immediate UX need to confirm a duplicate (so the person doesn't lose their half-filled signup form to a confusing generic error); resend has no equivalent need — its caller already believes they have an account and is just trying to get a working link. Turning it into a second, repeatable existence-check oracle would cost real safety for no real UX gain, so unlike register, this one stays uniform regardless of what actually happened server-side.
+- **`/auth/verify` and `/auth/resend-verification` reuse Day 11's `RateLimitingFilter` rather than a second mechanism (Day 12):** both are exactly the shape of endpoint that filter already exists for — reachable without a token, and abusable (token-guessing against `/verify`, inbox-spam via repeated `/resend-verification` calls). Adding two path strings to an existing `Set` beat writing a second rate limiter that would've needed the exact same reasoning already written down for the first one.
+- **CVE-2026-22746 is a known, documented limitation, not something this project works around (Day 12):** Spring Security's `DaoAuthenticationProvider` checks `isEnabled()`/`isAccountNonLocked()`/`isAccountNonExpired()` before comparing passwords — the exact mechanism Day 10's lockout and Day 12's verification both depend on — and a disclosed timing side-channel (LOW severity, April 2026) means the *response time* for a locked/disabled/unverified account can theoretically differ from a wrong-password one, even though the response *body* is identical either way. Spring Boot 3.3.5 (this project's version) is on the affected Spring Security line (6.3.4), and the free OSS fix requires upgrading past 6.5.10 — not a drop-in patch-version bump for this Boot version. Documented rather than silently left unfixed: a portfolio project doesn't need same-day remediation of a LOW-severity timing side-channel, but pretending it doesn't apply here would be dishonest, since the exact pattern this README already documents as a security feature (Day 10's identical-message defense) is precisely what the CVE partially undermines.
+- More decisions (password reset flow) will be documented here as each lands.
 
 ## License
 

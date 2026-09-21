@@ -46,6 +46,12 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.UNAUTHORIZED, ex.getMessage(), request, null);
     }
 
+    /** Day 12: valid credentials, but the account hasn't verified its email yet. */
+    @ExceptionHandler(AccountNotVerifiedException.class)
+    public ResponseEntity<ApiErrorResponse> handleAccountNotVerified(AccountNotVerifiedException ex, HttpServletRequest request) {
+        return build(HttpStatus.FORBIDDEN, ex.getMessage(), request, null);
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ApiErrorResponse> handleValidation(MethodArgumentNotValidException ex, HttpServletRequest request) {
         Map<String, String> fieldErrors = new LinkedHashMap<>();

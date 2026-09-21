@@ -57,6 +57,14 @@ public class AppUserPrincipal implements UserDetails {
         return lockedUntil == null || lockedUntil.isBefore(LocalDateTime.now());
     }
 
+    /**
+     * Day 12: wired to {@code User.enabled}, which now genuinely starts
+     * {@code false} on registration (see {@code AuthService.register()})
+     * instead of defaulting to {@code true} as a placeholder. Same
+     * {@code PreAuthenticationChecks} ordering as {@link #isAccountNonLocked()}
+     * — this is checked before the password is compared, so an
+     * unverified account is rejected on username alone.
+     */
     @Override
     public boolean isEnabled() {
         return user.isEnabled();

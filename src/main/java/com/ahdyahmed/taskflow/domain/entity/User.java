@@ -46,7 +46,7 @@ public class User extends BaseEntity {
     @Builder.Default
     private Role role = Role.USER;
 
-    /** Flipped to true once email verification (Day 12) completes. */
+    /** Starts false; flipped to true once email verification (Day 12) completes. */
     @Column(nullable = false)
     @Builder.Default
     private boolean enabled = false;
