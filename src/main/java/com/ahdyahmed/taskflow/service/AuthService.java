@@ -2,7 +2,9 @@ package com.ahdyahmed.taskflow.service;
 
 import com.ahdyahmed.taskflow.config.AppProperties;
 import com.ahdyahmed.taskflow.config.JwtProperties;
+import com.ahdyahmed.taskflow.config.PasswordResetProperties;
 import com.ahdyahmed.taskflow.config.VerificationProperties;
+import com.ahdyahmed.taskflow.domain.entity.PasswordResetToken;
 import com.ahdyahmed.taskflow.domain.entity.RefreshToken;
 import com.ahdyahmed.taskflow.domain.entity.User;
 import com.ahdyahmed.taskflow.domain.entity.VerificationToken;
@@ -11,6 +13,7 @@ import com.ahdyahmed.taskflow.dto.request.EmailRequest;
 import com.ahdyahmed.taskflow.dto.request.LoginRequest;
 import com.ahdyahmed.taskflow.dto.request.RefreshRequest;
 import com.ahdyahmed.taskflow.dto.request.RegisterRequest;
+import com.ahdyahmed.taskflow.dto.request.ResetPasswordRequest;
 import com.ahdyahmed.taskflow.dto.response.AuthResponse;
 import com.ahdyahmed.taskflow.dto.response.UserResponse;
 import com.ahdyahmed.taskflow.email.EmailService;
@@ -19,6 +22,7 @@ import com.ahdyahmed.taskflow.exception.EmailAlreadyInUseException;
 import com.ahdyahmed.taskflow.exception.InvalidCredentialsException;
 import com.ahdyahmed.taskflow.exception.InvalidTokenException;
 import com.ahdyahmed.taskflow.mapper.UserMapper;
+import com.ahdyahmed.taskflow.repository.PasswordResetTokenRepository;
 import com.ahdyahmed.taskflow.repository.RefreshTokenRepository;
 import com.ahdyahmed.taskflow.repository.UserRepository;
 import com.ahdyahmed.taskflow.repository.VerificationTokenRepository;
@@ -45,11 +49,13 @@ public class AuthService {
     private final UserRepository userRepository;
     private final RefreshTokenRepository refreshTokenRepository;
     private final VerificationTokenRepository verificationTokenRepository;
+    private final PasswordResetTokenRepository passwordResetTokenRepository;
     private final PasswordEncoder passwordEncoder;
     private final AuthenticationManager authenticationManager;
     private final JwtService jwtService;
     private final JwtProperties jwtProperties;
     private final VerificationProperties verificationProperties;
+    private final PasswordResetProperties passwordResetProperties;
     private final AppProperties appProperties;
     private final UserMapper userMapper;
     private final LoginAttemptService loginAttemptService;
@@ -189,6 +195,84 @@ public class AuthService {
         userRepository.findByEmail(request.getEmail())
                 .filter(user -> !user.isEnabled())
                 .ifPresent(this::issueVerificationToken);
+    }
+
+    /**
+     * Day 13: {@code POST /auth/forgot-password}. Always {@code 204},
+     * always identical, whether the email exists or not — this is the
+     * single most standard version of this exact trade-off across real
+     * auth systems (unlike Day 9's deliberately-honest register 409, or
+     * Day 12's resend-verification, forgot-password revealing account
+     * existence is a textbook enumeration vector with essentially no
+     * counterbalancing UX need, since "check your email" is a perfectly
+     * good response whether or not there's actually an email coming).
+     */
+    @Transactional
+    public void forgotPassword(EmailRequest request) {
+        userRepository.findByEmail(request.getEmail())
+                .ifPresent(this::issuePasswordResetToken);
+    }
+
+    /**
+     * Day 13: {@code POST /auth/reset-password}. Three things happen
+     * together, in one transaction: the password changes, the token that
+     * authorized it is consumed so it can't be replayed, and — the
+     * roadmap's explicit requirement — every refresh token this user
+     * currently holds is revoked. That last part matters: without it,
+     * anyone who stole a refresh token before the password reset (the
+     * exact scenario a reset is often responding to) would keep working
+     * access via that token indefinitely, completely unaffected by the
+     * password having changed underneath them. A password reset that
+     * doesn't also invalidate existing sessions only half-solves the
+     * problem it exists for.
+     * <p>
+     * Also clears any active lockout ({@code LoginAttemptService.resetFailedAttempts}).
+     * Proving ownership of the account's email is a stronger identity
+     * signal than a correct login password — if that's enough to change
+     * the password, it's enough to also lift a lockout that exists
+     * specifically to slow down someone who *doesn't* have that kind of
+     * access.
+     */
+    @Transactional
+    public void resetPassword(ResetPasswordRequest request) {
+        PasswordResetToken stored = passwordResetTokenRepository.findByTokenHash(TokenHasher.sha256Hex(request.getToken()))
+                .filter(prt -> !prt.isUsed())
+                .filter(prt -> prt.getExpiresAt().isAfter(LocalDateTime.now()))
+                .orElseThrow(() -> new InvalidTokenException("Password reset token is invalid or expired"));
+
+        stored.setUsed(true);
+        User user = stored.getUser();
+        user.setPasswordHash(passwordEncoder.encode(request.getNewPassword()));
+
+        refreshTokenRepository.revokeAllForUser(user.getId());
+        loginAttemptService.resetFailedAttempts(user.getId());
+    }
+
+    /**
+     * Unlike {@link #issueVerificationToken}'s link, this one deliberately
+     * does NOT point at {@code /auth/reset-password} directly — that
+     * endpoint is a {@code POST} expecting a new password in the body, so
+     * a browser {@code GET} on it would just 405. Real password-reset
+     * emails link to a web page with a form (which then calls the API),
+     * not straight at the API itself; this project has no frontend, so
+     * the link below is illustrative of where that page's URL would go,
+     * carrying the token as a query param the way such a page typically
+     * would.
+     */
+    private void issuePasswordResetToken(User user) {
+        String rawToken = UUID.randomUUID().toString();
+
+        PasswordResetToken token = PasswordResetToken.builder()
+                .tokenHash(TokenHasher.sha256Hex(rawToken))
+                .user(user)
+                .expiresAt(LocalDateTime.now().plusHours(passwordResetProperties.tokenExpirationHours()))
+                .build();
+        passwordResetTokenRepository.save(token);
+
+        String link = "%s/reset-password?token=%s".formatted(appProperties.baseUrl(), rawToken);
+        emailService.send(user.getEmail(), "Reset your TaskFlow password",
+                "Click the link below to reset your password:\n" + link
+                        + "\n\nIf you didn't request this, you can safely ignore this email.");
     }
 
     private void issueVerificationToken(User user) {

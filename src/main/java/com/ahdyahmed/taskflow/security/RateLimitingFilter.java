@@ -22,12 +22,13 @@ import java.util.concurrent.ConcurrentHashMap;
  * Day 11: a simple in-memory token bucket per (client IP, path), applied
  * to the auth endpoints reachable without a token — {@code /auth/login}
  * and {@code /auth/register} initially; Day 12 added
- * {@code /auth/verify} and {@code /auth/resend-verification} to the same
- * set, since a token-guessing or resend-spam attempt against those is
- * exactly the kind of thing this filter already exists to slow down.
- * Every other endpoint already requires a valid JWT, which is its own
- * throttle of sorts; these are the ones reachable with nothing but a
- * network connection.
+ * {@code /auth/verify} and {@code /auth/resend-verification}, and
+ * Day 13 added {@code /auth/forgot-password} and
+ * {@code /auth/reset-password}, to the same set, since a token-guessing
+ * or spam attempt against any of those is exactly the kind of thing this
+ * filter already exists to slow down. Every other endpoint already
+ * requires a valid JWT, which is its own throttle of sorts; these are
+ * the ones reachable with nothing but a network connection.
  * <p>
  * <b>In-memory, single-instance only.</b> The bucket map lives in this
  * filter's heap, so it resets on restart and isn't shared across
@@ -50,8 +51,12 @@ import java.util.concurrent.ConcurrentHashMap;
 @RequiredArgsConstructor
 public class RateLimitingFilter extends OncePerRequestFilter {
 
-    private static final Set<String> RATE_LIMITED_PATHS =
-            Set.of("/auth/login", "/auth/register", "/auth/verify", "/auth/resend-verification");
+    private static final Set<String> RATE_LIMITED_PATHS = Set.of(
+            "/auth/login", "/auth/register", "/auth/verify", "/auth/resend-verification",
+            // Day 13: forgot-password is a classic inbox-spam and
+            // enumeration-probing target — same reasoning as Day 12's
+            // additions, same filter.
+            "/auth/forgot-password", "/auth/reset-password");
 
     private final RateLimitProperties rateLimitProperties;
     private final SecurityErrorResponseWriter responseWriter;

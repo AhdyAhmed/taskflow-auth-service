@@ -2,23 +2,23 @@
 
 A secure REST API demonstrating JWT authentication, role-based access control, and ownership-based authorization in Spring Boot. This is Project 2 of a 3-project backend portfolio (Core REST API → **Auth & Authorization** → Production-grade Booking/Order System).
 
-**Status:** 🚧 Day 12 — accounts now start disabled and must click a (mocked) verification link before they can log in. See [What's new in Day 12](#whats-new-in-day-12) below for the details, and [Roadmap](#roadmap) for what's still ahead.
+**Status:** 🚧 Day 13 — password reset is live, closing out Phase 5 ("Real-World Auth Flows"). Resetting a password now also revokes every refresh token the account currently holds. See [What's new in Day 13](#whats-new-in-day-13) below for the details, and [Roadmap](#roadmap) for what's still ahead.
 
 ---
 
-## What's new in Day 12
+## What's new in Day 13
 
-Every account created since Day 4 has logged in immediately after registering — `User.enabled` existed on the entity from Day 2 but `AuthService.register()` set it to `true` with a `TEMPORARY` comment pointing at today. That placeholder is gone:
+The last piece of the "real-world auth flows" phase — a forgotten password shouldn't mean a locked-out account forever:
 
-- **New [`EmailService`](src/main/java/com/ahdyahmed/taskflow/email/EmailService.java) interface**, one method (`send(to, subject, body)`), with [`LoggingEmailService`](src/main/java/com/ahdyahmed/taskflow/email/LoggingEmailService.java) as the only implementation — it logs the email at INFO instead of sending it, exactly as the roadmap asks for. Swapping in real SMTP later means writing one new class against the same interface; nothing about how `AuthService` builds email content would need to change.
-- **`register()` now issues a verification token and stays disabled until it's used.** A `VerificationToken` (same shape as `RefreshToken` — hashed at rest, expiring, single-use) gets created, and a mocked email goes out with a link to `GET /auth/verify?token=...`. Token lifetime is configurable via the new [`VerificationProperties`](src/main/java/com/ahdyahmed/taskflow/config/VerificationProperties.java) (`app.security.verification.token-expiration-hours`, default 24h).
-- **`/auth/verify` is a `GET`, deliberately.** It's meant to be a clickable link in an email, and mutating state (flipping `enabled`) on a `GET` is a pragmatic, common break from REST purism — not an oversight. See [Design decisions](#design-decisions-living-section-updated-as-the-project-grows) for the reasoning.
-- **Unverified accounts can't log in — and get a message that actually says so**, `403` "Please verify your email before logging in," rather than the generic 401 lockout/wrong-password uses. That's a deliberate asymmetry: see `AuthService.login()`'s javadoc for why "unverified" doesn't need hiding the way "locked" and "wrong password" do, and why this path is explicitly *not* counted as a failed login attempt for Day 10's lockout.
-- **New `POST /auth/resend-verification`**, added beyond the roadmap's literal ask because a verification link that can expire with no way to get a new one is a real gap. Always `204`, regardless of whether the email exists, is already verified, or a fresh token actually got issued — the mirror image of `register()`'s duplicate-email `409`, and deliberately so (full reasoning in Design decisions).
-- **`/auth/verify` and `/auth/resend-verification` are rate-limited too**, added to Day 11's existing `RateLimitingFilter` rather than duplicating that logic — a token-guessing or resend-spam attempt against either is exactly the kind of thing that filter already exists to slow down.
-- **A real, current Spring Security CVE worth knowing about if you're relying on this pattern:** [CVE-2026-22746](https://spring.io/security/cve-2026-22746) (published April 2026, LOW severity) affects `DaoAuthenticationProvider`'s timing-attack defense for exactly the `isEnabled()`/`isAccountNonLocked()`/`isAccountNonExpired()` checks this project's Day 10 lockout and Day 12 verification both depend on — the checks themselves are unaffected, but the *timing* of the response can theoretically distinguish a locked/disabled account from a wrong-password one, undermining part of the "identical response" enumeration defense documented on Day 10. Spring Boot 3.3.5 (this project's version) ships Spring Security 6.3.4, which is in the affected range; the free OSS fix landed in 6.5.10, meaning the practical remediation is upgrading the Spring Boot line, not a patch-version bump. Noted here as a known, current limitation rather than silently left undocumented — not fixed today, since this is a portfolio project, not a production deployment, but exactly the kind of advisory a real deployment would need to track and act on.
+- **New `POST /auth/forgot-password`** — always `204`, always identical whether the email exists or not. Unlike Day 9's deliberately-honest register `409` or Day 12's resend-verification, this is the one place in the API where revealing account existence has a real, textbook attacker payoff and essentially no offsetting UX need, so it stays uniform no matter what happened server-side.
+- **New `POST /auth/reset-password`** — validates the token (same hashed/expiring/single-use shape as `VerificationToken`, via the new `PasswordResetToken`), updates the password, and — the roadmap's explicit requirement — revokes every refresh token the account currently holds, in the same transaction. Without that last part, anyone who'd stolen a refresh token before the reset (often exactly the scenario prompting one) would keep working access via that token, completely unaffected by the password having changed underneath them.
+- **A genuinely subtle bug caught and fixed before it could ship silently broken:** the bulk refresh-token revocation is a `@Modifying` JPQL `UPDATE`, which — unlike a `SELECT` — does **not** auto-flush pending entity changes first. `resetPassword()` sets the new password hash and marks the reset token used *before* calling that bulk update; without `flushAutomatically = true` on the query, those two pending writes would get silently discarded the moment `clearAutomatically = true` detaches the persistence context afterward. Both flags are required, for different reasons — full explanation on `RefreshTokenRepository.revokeAllForUser`'s javadoc. This is exactly the kind of thing that passes a lazy manual test (the password *looks* like it changed, in that request) and then loses data the moment someone checks two requests later.
+- **Password-reset tokens expire in 1 hour, not verification's 24** — a leaked reset link is a more immediately dangerous find than a leaked verification link (it grants a password change, not just account activation), so the window is kept deliberately tight. Configurable via the new [`PasswordResetProperties`](src/main/java/com/ahdyahmed/taskflow/config/PasswordResetProperties.java) (`app.security.password-reset.token-expiration-hours`).
+- **A successful reset also clears any active account lockout.** Proving email ownership is a stronger identity signal than a correct login password — if that's enough to change the password, it's enough to lift a lockout that exists specifically to slow down someone who *doesn't* have that kind of access.
+- **`/auth/forgot-password` and `/auth/reset-password` join Day 11's rate limiter and Day 12's public-endpoint list** — same reasoning both times: reachable without a token, so it needs the same throttling and the same open access as `/auth/verify`/`/auth/resend-verification`.
+- **This is the third token entity of an identical shape** (`RefreshToken`, `VerificationToken`, now `PasswordResetToken`), and deliberately not collapsed into one generic `Token` table with a "purpose" column — see [Design decisions](#design-decisions-living-section-updated-as-the-project-grows) for why three small, purpose-specific tables won out over one polymorphic one.
 
-Commit for today: `feat: email verification flow (mocked email sender)`
+Commit for today: `feat: password reset flow with refresh-token invalidation`
 
 ## What this project proves
 
@@ -68,9 +68,9 @@ docker compose down          # stop the container, keep data
 docker compose down -v       # stop and wipe the volume (fresh DB next time)
 ```
 
-## API (Day 12)
+## API (Day 13)
 
-Only `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout`, `/auth/verify`, and `/auth/resend-verification` are public. Everything else needs `Authorization: Bearer <accessToken>` at minimum. Beyond that, most rules are no longer role-only — see the "Auth" column below, and [What's new in Day 12](#whats-new-in-day-12) for what changed most recently.
+Only `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout`, `/auth/verify`, `/auth/resend-verification`, `/auth/forgot-password`, and `/auth/reset-password` are public. Everything else needs `Authorization: Bearer <accessToken>` at minimum. Beyond that, most rules are no longer role-only — see the "Auth" column below, and [What's new in Day 13](#whats-new-in-day-13) for what changed most recently.
 
 | Method | Path | Auth |
 |---|---|---|
@@ -80,6 +80,8 @@ Only `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout`, `/auth/ve
 | POST | `/auth/logout` | public |
 | GET | `/auth/verify` | public — `?token=...`, activates the account (Day 12); rate-limited |
 | POST | `/auth/resend-verification` | public — always `204`, regardless of outcome (Day 12); rate-limited |
+| POST | `/auth/forgot-password` | public — always `204`, regardless of outcome (Day 13); rate-limited |
+| POST | `/auth/reset-password` | public — validates the token, updates the password, revokes all refresh tokens (Day 13); rate-limited |
 | POST | `/api/projects` | MANAGER+ (becomes the project's owner) |
 | GET | `/api/projects/{id}` | ADMIN, or project owner/member |
 | GET | `/api/projects` | any authenticated user — ADMIN sees all, everyone else sees their own, paginated & sortable |
@@ -103,6 +105,8 @@ Only `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout`, `/auth/ve
 **Rate limiting (Day 11):** `/auth/login` and `/auth/register` each allow 20 requests per 60 seconds per client IP, tracked independently of each other. Past that, the response is `429 Too Many Requests` with a `Retry-After: <seconds>` header. See [What's new in Day 11](#whats-new-in-day-11).
 
 **Email verification (Day 12):** new accounts start disabled. `LoggingEmailService` logs the verification email to the application console instead of sending it — check server output for a line starting `Mock email — to: ...` containing the `/auth/verify?token=...` link. See [What's new in Day 12](#whats-new-in-day-12).
+
+**Password reset (Day 13):** same mocked-email mechanism as verification, 1-hour token lifetime instead of 24. Resetting a password revokes every refresh token the account currently holds — anyone still logged in elsewhere is logged out. See [What's new in Day 13](#whats-new-in-day-13).
 
 ## Full end-to-end test sequence
 
@@ -435,7 +439,49 @@ curl -i -X POST http://localhost:8080/auth/resend-verification \
 # -> 204, identical response — no way to tell these two calls apart from the outside
 ```
 
-## Project structure (Day 12)
+### Day 13 — password reset
+
+```bash
+# Alice's only refresh token so far (from Day 6) was already used up by
+# that block's refresh + logout demo, so log her in fresh here — we need
+# a genuinely active refresh token to demonstrate reset-password killing it.
+ALICE_LOGIN2=$(curl -s -X POST http://localhost:8080/auth/login \
+  -H "Content-Type: application/json" -d '{"email": "alice@taskflow.dev", "password": "Sup3rSecret"}')
+ALICE_REFRESH2=$(echo "$ALICE_LOGIN2" | sed -E 's/.*"refreshToken":"([^"]+)".*/\1/')
+
+# forgot-password — identical 204 whether the account exists or not
+curl -i -X POST http://localhost:8080/auth/forgot-password \
+  -H "Content-Type: application/json" -d '{"email": "alice@taskflow.dev"}'
+curl -i -X POST http://localhost:8080/auth/forgot-password \
+  -H "Content-Type: application/json" -d '{"email": "totally-fake-address@taskflow.dev"}'
+```
+
+Check the console for Alice's `Mock email — to: alice@taskflow.dev | subject: Reset your TaskFlow password` line and copy its token:
+
+```bash
+curl -i -X POST http://localhost:8080/auth/reset-password \
+  -H "Content-Type: application/json" \
+  -d '{"token": "<ALICE_RESET_TOKEN_FROM_CONSOLE>", "newPassword": "NewSup3rSecret"}'
+# -> 204
+
+# The refresh token Alice was holding before the reset is dead now, even
+# though it hadn't actually reached its own 7-day expiry
+curl -i -X POST http://localhost:8080/auth/refresh \
+  -H "Content-Type: application/json" -d "{\"refreshToken\": \"$ALICE_REFRESH2\"}"
+# -> 401, "Refresh token is invalid or expired"
+
+# Her old password no longer works...
+curl -i -X POST http://localhost:8080/auth/login \
+  -H "Content-Type: application/json" -d '{"email": "alice@taskflow.dev", "password": "Sup3rSecret"}'
+# -> 401, generic "Invalid email or password" — same message as always
+
+# ...but the new one does
+curl -i -X POST http://localhost:8080/auth/login \
+  -H "Content-Type: application/json" -d '{"email": "alice@taskflow.dev", "password": "NewSup3rSecret"}'
+# -> 200, a fresh access/refresh pair
+```
+
+## Project structure (Day 13)
 
 ```
 src/main/java/com/ahdyahmed/taskflow/
@@ -448,6 +494,7 @@ src/main/java/com/ahdyahmed/taskflow/
 │   ├── LockoutProperties.java           # Day 10: app.security.lockout.* bound as a record
 │   ├── RateLimitProperties.java         # Day 11: app.security.rate-limit.* bound as a record
 │   ├── VerificationProperties.java      # Day 12: app.security.verification.* bound as a record
+│   ├── PasswordResetProperties.java     # Day 13: app.security.password-reset.* bound as a record
 │   ├── SecurityConfig.java              # stateless sessions, JWT + rate-limit filters, only /auth/* public
 │   └── MethodSecurityConfig.java        # @EnableMethodSecurity + role hierarchy (ADMIN > MANAGER > USER)
 ├── email/
@@ -456,10 +503,10 @@ src/main/java/com/ahdyahmed/taskflow/
 ├── security/
 │   ├── JwtService.java                  # generate/validate access + refresh tokens
 │   ├── JwtAuthenticationFilter.java     # OncePerRequestFilter, parses Bearer tokens
-│   ├── RateLimitingFilter.java          # Day 11: Bucket4j token bucket per (IP, path); Day 12: + /auth/verify, /auth/resend-verification
+│   ├── RateLimitingFilter.java          # Day 11: Bucket4j token bucket per (IP, path); Day 12/13: + verify/resend/forgot/reset paths
 │   ├── AppUserPrincipal.java            # UserDetails wrapping the domain User; Day 10: real isAccountNonLocked(); Day 12: real isEnabled()
 │   ├── CustomUserDetailsService.java    # UserDetailsService backed by UserRepository
-│   ├── TokenHasher.java                 # SHA-256, used for refresh/verification-token-at-rest storage
+│   ├── TokenHasher.java                 # SHA-256, used for refresh/verification/reset-token-at-rest storage
 │   ├── SecurityErrorResponseWriter.java # shared JSON error writer for 401/403/429
 │   ├── RestAuthenticationEntryPoint.java# 401 — no/invalid token
 │   ├── RestAccessDeniedHandler.java     # 403 — valid token, wrong role/not owner/not member
@@ -467,12 +514,12 @@ src/main/java/com/ahdyahmed/taskflow/
 │   ├── ProjectSecurity.java             # Day 8: @projectSecurity.isOwner/isMember for @PreAuthorize
 │   └── TaskSecurity.java                # Day 8: @taskSecurity.isOwnerOrAssignee/isProjectOwner/isProjectMember
 ├── controller/
-│   ├── AuthController.java              # POST /auth/register, /login, /refresh, /logout; Day 12: + GET /verify, POST /resend-verification
+│   ├── AuthController.java              # + Day 12: GET /verify, POST /resend-verification; Day 13: POST /forgot-password, /reset-password
 │   ├── AdminUserController.java         # ADMIN-only: list users, change role
 │   ├── ProjectController.java           # + Day 8: POST/DELETE /{id}/members/{userId}
 │   └── TaskController.java
 ├── service/
-│   ├── AuthService.java                 # Day 10: delegates failed-attempt tracking to LoginAttemptService; Day 12: verification flow
+│   ├── AuthService.java                 # Day 10: delegates lockout tracking; Day 12: verification flow; Day 13: password reset flow
 │   ├── LoginAttemptService.java         # Day 10: lockout bookkeeping, deliberately its own bean — see javadoc
 │   ├── AdminUserService.java            # class-level @PreAuthorize("hasRole('ADMIN')")
 │   ├── ProjectService.java              # Day 8: ownership/membership-scoped; Day 9: member-removal guard + sort validation
@@ -487,27 +534,28 @@ src/main/java/com/ahdyahmed/taskflow/
 │   ├── StrongPassword.java              # custom bean-validation annotation
 │   └── StrongPasswordValidator.java
 ├── dto/
-│   ├── request/   # RegisterRequest, LoginRequest, RefreshRequest, ChangeRoleRequest, EmailRequest, ProjectCreateRequest, ProjectUpdateRequest, TaskCreateRequest, TaskUpdateRequest
+│   ├── request/   # RegisterRequest, LoginRequest, RefreshRequest, ChangeRoleRequest, EmailRequest, ResetPasswordRequest, ProjectCreateRequest, ProjectUpdateRequest, TaskCreateRequest, TaskUpdateRequest
 │   │              # (Day 8: ProjectCreateRequest/TaskCreateRequest no longer take ownerId/createdById — derived from the authenticated principal)
-│   │              # (Day 12: EmailRequest backs /auth/resend-verification, and Day 13's /auth/forgot-password)
+│   │              # (Day 12: EmailRequest backs both /auth/resend-verification and Day 13's /auth/forgot-password)
 │   └── response/  # UserResponse, AuthResponse, ProjectResponse, TaskResponse, ApiErrorResponse
 ├── exception/
 │   ├── ResourceNotFoundException.java
 │   ├── EmailAlreadyInUseException.java
 │   ├── InvalidCredentialsException.java
-│   ├── InvalidTokenException.java
+│   ├── InvalidTokenException.java       # Day 13: also covers an invalid/expired password-reset token
 │   ├── AccountNotVerifiedException.java # Day 12: unverified-account login rejection
 │   ├── MemberHasActiveAssignmentsException.java  # Day 9: the member-removal guard
 │   └── GlobalExceptionHandler.java      # @RestControllerAdvice, consistent JSON error shape; Day 9/12: + 409/403/400 handlers above
 ├── domain/
-│   ├── entity/                          # BaseEntity, User, Project, Task, RefreshToken, VerificationToken
+│   ├── entity/                          # BaseEntity, User, Project, Task, RefreshToken, VerificationToken, PasswordResetToken
 │   └── enums/                           # Role, TaskStatus, TaskPriority
 └── repository/
     ├── UserRepository.java
     ├── ProjectRepository.java
     ├── TaskRepository.java
-    ├── RefreshTokenRepository.java
-    └── VerificationTokenRepository.java # Day 12
+    ├── RefreshTokenRepository.java      # Day 13: + revokeAllForUser bulk update
+    ├── VerificationTokenRepository.java # Day 12
+    └── PasswordResetTokenRepository.java # Day 13
 ```
 
 ## Roadmap
@@ -523,7 +571,7 @@ src/main/java/com/ahdyahmed/taskflow/
 | 7 | Role-based access control (RBAC), custom 401/403 handlers | ✅ |
 | 8-9 | Ownership rules, edge cases | ✅ |
 | 10-11 | Account lockout, rate limiting on auth endpoints | ✅ |
-| 12-13 | Email verification, password reset (mocked email) | 🚧 (Day 12 done — email verification; Day 13 password reset still ahead) |
+| 12-13 | Email verification, password reset (mocked email) | ✅ |
 | 14-16 | Unit + integration tests, security test matrix |  |
 | 17-18 | OpenAPI docs, architecture diagram, final README |  |
 
@@ -593,7 +641,13 @@ src/main/java/com/ahdyahmed/taskflow/
 - **`/auth/resend-verification` always returns `204`, the mirror image of `register()`'s honest `409` (Day 12):** register has a real, immediate UX need to confirm a duplicate (so the person doesn't lose their half-filled signup form to a confusing generic error); resend has no equivalent need — its caller already believes they have an account and is just trying to get a working link. Turning it into a second, repeatable existence-check oracle would cost real safety for no real UX gain, so unlike register, this one stays uniform regardless of what actually happened server-side.
 - **`/auth/verify` and `/auth/resend-verification` reuse Day 11's `RateLimitingFilter` rather than a second mechanism (Day 12):** both are exactly the shape of endpoint that filter already exists for — reachable without a token, and abusable (token-guessing against `/verify`, inbox-spam via repeated `/resend-verification` calls). Adding two path strings to an existing `Set` beat writing a second rate limiter that would've needed the exact same reasoning already written down for the first one.
 - **CVE-2026-22746 is a known, documented limitation, not something this project works around (Day 12):** Spring Security's `DaoAuthenticationProvider` checks `isEnabled()`/`isAccountNonLocked()`/`isAccountNonExpired()` before comparing passwords — the exact mechanism Day 10's lockout and Day 12's verification both depend on — and a disclosed timing side-channel (LOW severity, April 2026) means the *response time* for a locked/disabled/unverified account can theoretically differ from a wrong-password one, even though the response *body* is identical either way. Spring Boot 3.3.5 (this project's version) is on the affected Spring Security line (6.3.4), and the free OSS fix requires upgrading past 6.5.10 — not a drop-in patch-version bump for this Boot version. Documented rather than silently left unfixed: a portfolio project doesn't need same-day remediation of a LOW-severity timing side-channel, but pretending it doesn't apply here would be dishonest, since the exact pattern this README already documents as a security feature (Day 10's identical-message defense) is precisely what the CVE partially undermines.
-- More decisions (password reset flow) will be documented here as each lands.
+- **`PasswordResetToken` is a third copy of the same shape, not a generalized `Token` entity (Day 13):** by Day 13 there are three tables — `RefreshToken`, `VerificationToken`, `PasswordResetToken` — that are all structurally "hashed value, owning user, expiry, single-use flag." Collapsing them into one `Token` entity with a `purpose` enum was a real option, considered and rejected: the three already have slightly different consumption semantics (`RefreshToken` gets rotated and re-issued on every refresh; `VerificationToken`/`PasswordResetToken` are used exactly once and never replaced), different lifetimes, and different downstream effects on `use` (a verify sets `enabled`; a reset changes a password and cascades into revoking *other* tokens). A generic table would need nullable, purpose-specific columns or a lookup into other tables anyway — three small, obviously-named tables are easier to query, index, and reason about than one polymorphic one pretending to be simple.
+- **`/auth/forgot-password` is the one endpoint in this API that goes fully uniform, no exceptions (Day 13):** contrast with `register()`'s honest `409` (Day 9) and `resend-verification`'s "204 either way" (Day 12, but still only reachable by someone who already believes they have an account). Forgot-password is reachable by literally anyone with an email address to type in, with zero legitimate need to know whether it's registered — "check your inbox" is a complete, honest-enough response whether or not an inbox is actually getting anything. This is the standard industry pattern for a reason: of the three email-collecting endpoints in this API, this one has the worst ratio of attacker value to legitimate UX need for revealing existence.
+- **Password reset revokes refresh tokens in the same transaction as the password change, not as a follow-up step (Day 13):** the roadmap calls this out explicitly, and the reasoning is concrete, not abstract — a stolen refresh token is exactly the kind of thing a password reset is often issued *in response to*. A reset that changes the password but leaves existing refresh tokens live means an attacker who already has one keeps working access indefinitely, unaffected by the very action meant to lock them out. Bundling both in one `@Transactional` method means there's no window where one succeeded without the other.
+- **The bulk-revoke query needs `flushAutomatically = true` *and* `clearAutomatically = true` together, and this was a real bug caught during review, not a hypothetical (Day 13):** `resetPassword()` sets the new password hash and marks the reset token used — both pending, unflushed entity changes — immediately before calling the bulk `@Modifying` `UPDATE` that revokes refresh tokens. A JPQL bulk update does not auto-flush pending entity state first (unlike a `SELECT`, which Hibernate's `FlushMode.AUTO` does reason about); without `flushAutomatically = true`, those two pending writes would still be sitting unflushed the moment `clearAutomatically = true` detached them from the persistence context — silently discarding the password change and leaving the reset token reusable, while the refresh-token revocation itself (a direct SQL `UPDATE`, unaffected by any of this) would still have succeeded. That combination — one part of a "single atomic operation" silently failing while the rest silently succeeds — is a bad way for a security-critical flow to break, and the specific reason it's called out this explicitly here.
+- **A successful reset also clears `failedLoginAttempts`/`lockedUntil` (Day 13):** not part of the roadmap's literal ask, but a natural extension of the same reasoning Day 10 already established for successful logins — proving control of the account (here, of its email inbox, arguably a stronger signal than a remembered password) is a legitimate reason to lift a lockout that exists to slow down someone who lacks that kind of access.
+- **`forgot-password`/`reset-password` don't check `enabled` (Day 13, deliberate scope boundary):** an unverified account can request and complete a password reset just like a verified one — clicking an emailed reset link is itself a proof of email ownership, arguably as strong a signal as clicking a verification link. What it does *not* do is also flip `enabled` to `true` as a side effect; that would be a reasonable follow-on feature (finishing a reset for a never-verified account could count as verifying it too), but it's not something the roadmap asked for on Day 13, and conflating "I proved I own this email" with "this account is now fully activated" is a real product decision worth making deliberately rather than as an incidental side effect of this change. Noted here so it reads as a boundary, not a gap: today, a successfully-reset-but-still-unverified account still can't log in until it's separately verified.
+- More decisions will be documented here as new phases (testing, docs/polish) begin to raise them.
 
 ## License
 

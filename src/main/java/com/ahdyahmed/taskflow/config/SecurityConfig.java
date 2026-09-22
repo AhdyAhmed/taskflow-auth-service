@@ -38,7 +38,10 @@ public class SecurityConfig {
             "/auth/register", "/auth/login", "/auth/refresh", "/auth/logout",
             // Day 12: both reachable by someone who, by definition, isn't
             // verified/logged-in yet — they have to stay open.
-            "/auth/verify", "/auth/resend-verification"
+            "/auth/verify", "/auth/resend-verification",
+            // Day 13: same reasoning — a locked-out user resetting their
+            // password can't have a valid access token to present.
+            "/auth/forgot-password", "/auth/reset-password"
     };
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;

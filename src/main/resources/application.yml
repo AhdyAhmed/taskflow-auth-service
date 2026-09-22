@@ -34,6 +34,13 @@ app:
       # Day 12: how long a /auth/verify link stays valid after
       # registration. See VerificationProperties.
       token-expiration-hours: 24
+    password-reset:
+      # Day 13: deliberately much shorter than verification's 24h — a
+      # leaked password-reset link is a more immediately dangerous find
+      # than a leaked verification link (it grants a password change,
+      # not just account activation), so the window an attacker who
+      # intercepts one has to use it is kept tight. See PasswordResetProperties.
+      token-expiration-hours: 1
 
 ---
 # ------------------------------------------------------------------

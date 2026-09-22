@@ -4,6 +4,7 @@ import com.ahdyahmed.taskflow.dto.request.EmailRequest;
 import com.ahdyahmed.taskflow.dto.request.LoginRequest;
 import com.ahdyahmed.taskflow.dto.request.RefreshRequest;
 import com.ahdyahmed.taskflow.dto.request.RegisterRequest;
+import com.ahdyahmed.taskflow.dto.request.ResetPasswordRequest;
 import com.ahdyahmed.taskflow.dto.response.AuthResponse;
 import com.ahdyahmed.taskflow.dto.response.UserResponse;
 import com.ahdyahmed.taskflow.service.AuthService;
@@ -65,6 +66,18 @@ public class AuthController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void resendVerification(@Valid @RequestBody EmailRequest request) {
         authService.resendVerification(request);
+    }
+
+    @PostMapping("/forgot-password")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void forgotPassword(@Valid @RequestBody EmailRequest request) {
+        authService.forgotPassword(request);
+    }
+
+    @PostMapping("/reset-password")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void resetPassword(@Valid @RequestBody ResetPasswordRequest request) {
+        authService.resetPassword(request);
     }
 }
 
