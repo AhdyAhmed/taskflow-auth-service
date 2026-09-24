@@ -2,23 +2,20 @@
 
 A secure REST API demonstrating JWT authentication, role-based access control, and ownership-based authorization in Spring Boot. This is Project 2 of a 3-project backend portfolio (Core REST API → **Auth & Authorization** → Production-grade Booking/Order System).
 
-**Status:** 🚧 Day 13 — password reset is live, closing out Phase 5 ("Real-World Auth Flows"). Resetting a password now also revokes every refresh token the account currently holds. See [What's new in Day 13](#whats-new-in-day-13) below for the details, and [Roadmap](#roadmap) for what's still ahead.
+**Status:** 🚧 Day 14 — the first tests land, opening Phase 6 ("Testing"). `JwtServiceTest` and `AuthServiceTest` now back up several of the security claims this README has been making since Day 6 with actual assertions instead of just prose. See [What's new in Day 14](#whats-new-in-day-14) below for the details, and [Roadmap](#roadmap) for what's still ahead.
 
 ---
 
-## What's new in Day 13
+## What's new in Day 14
 
-The last piece of the "real-world auth flows" phase — a forgotten password shouldn't mean a locked-out account forever:
+Phase 6 opens with the two unit-test classes the roadmap calls for — no Spring context, no database, everything mocked, which is deliberate at this stage: the goal today is locking down each class's *own* branching logic in isolation, before Day 15 exercises the same flows end-to-end through real HTTP.
 
-- **New `POST /auth/forgot-password`** — always `204`, always identical whether the email exists or not. Unlike Day 9's deliberately-honest register `409` or Day 12's resend-verification, this is the one place in the API where revealing account existence has a real, textbook attacker payoff and essentially no offsetting UX need, so it stays uniform no matter what happened server-side.
-- **New `POST /auth/reset-password`** — validates the token (same hashed/expiring/single-use shape as `VerificationToken`, via the new `PasswordResetToken`), updates the password, and — the roadmap's explicit requirement — revokes every refresh token the account currently holds, in the same transaction. Without that last part, anyone who'd stolen a refresh token before the reset (often exactly the scenario prompting one) would keep working access via that token, completely unaffected by the password having changed underneath them.
-- **A genuinely subtle bug caught and fixed before it could ship silently broken:** the bulk refresh-token revocation is a `@Modifying` JPQL `UPDATE`, which — unlike a `SELECT` — does **not** auto-flush pending entity changes first. `resetPassword()` sets the new password hash and marks the reset token used *before* calling that bulk update; without `flushAutomatically = true` on the query, those two pending writes would get silently discarded the moment `clearAutomatically = true` detaches the persistence context afterward. Both flags are required, for different reasons — full explanation on `RefreshTokenRepository.revokeAllForUser`'s javadoc. This is exactly the kind of thing that passes a lazy manual test (the password *looks* like it changed, in that request) and then loses data the moment someone checks two requests later.
-- **Password-reset tokens expire in 1 hour, not verification's 24** — a leaked reset link is a more immediately dangerous find than a leaked verification link (it grants a password change, not just account activation), so the window is kept deliberately tight. Configurable via the new [`PasswordResetProperties`](src/main/java/com/ahdyahmed/taskflow/config/PasswordResetProperties.java) (`app.security.password-reset.token-expiration-hours`).
-- **A successful reset also clears any active account lockout.** Proving email ownership is a stronger identity signal than a correct login password — if that's enough to change the password, it's enough to lift a lockout that exists specifically to slow down someone who *doesn't* have that kind of access.
-- **`/auth/forgot-password` and `/auth/reset-password` join Day 11's rate limiter and Day 12's public-endpoint list** — same reasoning both times: reachable without a token, so it needs the same throttling and the same open access as `/auth/verify`/`/auth/resend-verification`.
-- **This is the third token entity of an identical shape** (`RefreshToken`, `VerificationToken`, now `PasswordResetToken`), and deliberately not collapsed into one generic `Token` table with a "purpose" column — see [Design decisions](#design-decisions-living-section-updated-as-the-project-grows) for why three small, purpose-specific tables won out over one polymorphic one.
+- **`JwtServiceTest`** — generation (right subject in `sub`, right `type` claim on access vs. refresh tokens), `isValid()` returning `true` for a freshly-issued token, and three separate ways `isValid()` should come back `false`: a tampered signature (flip one character, still base64-shaped, still fails verification), a token signed with a different key entirely, and a token that's already past its own expiry (a 1ms-lived token plus a short `Thread.sleep`, rather than mocking the clock just to prove one branch). Also covers plain garbage input and an empty string, since `isValid()`'s whole contract is "never throw, just answer `true`/`false`."
+- **`AuthServiceTest`** — `login()`'s three branches: valid credentials (issues a token pair, calls `LoginAttemptService.resetFailedAttempts`, never calls `registerFailedAttempt`), wrong credentials (`InvalidCredentialsException`, calls `registerFailedAttempt` with the attempted email), and an unverified account (`AccountNotVerifiedException`, and — the specific thing worth asserting, not just prose in `AuthService`'s javadoc — that this path calls *neither* `LoginAttemptService` method, since a correct-password-but-unverified attempt isn't credential-guessing and shouldn't move the lockout counter either way). Then `resetPassword()`'s three token states: expired, already-used, and unknown token hash all reject with `InvalidTokenException` and leave the password/refresh-tokens untouched (verified via `verify(..., never())`, not just "no exception"), and a valid token asserts the full success path — new password hash actually set on the `User` object, `revokeAllForUser` called with the right id, `LoginAttemptService.resetFailedAttempts` called, and the token itself flipped to `used`.
+- **Deliberately not in scope for `AuthServiceTest`:** the actual lockout arithmetic (attempt counting, the "expired lock is a fresh start" rule, extending vs. not-extending an active lock) lives in `LoginAttemptService`, not `AuthService` — `AuthServiceTest` only asserts that `AuthService` *calls* `LoginAttemptService` correctly for each outcome, via Mockito verification, not that the counting itself is correct. A dedicated `LoginAttemptServiceTest` covering that logic is exactly the kind of gap Day 16 ("fill gaps + coverage review") exists to catch — flagged here rather than silently left uncovered.
+- **No Testcontainers yet, on purpose.** Day 14 is unit tests only — everything above runs against mocks or plain objects, no Postgres involved — so `spring-boot-starter-test`/`spring-security-test` (already in `pom.xml` since Day 1) are sufficient. Testcontainers Postgres is a Day 15 addition, once `@SpringBootTest` + `MockMvc` integration tests need a real database behind the security filter chain.
 
-Commit for today: `feat: password reset flow with refresh-token invalidation`
+Commit for today: `test: unit tests for JWT service and auth service`
 
 ## What this project proves
 
@@ -481,7 +478,7 @@ curl -i -X POST http://localhost:8080/auth/login \
 # -> 200, a fresh access/refresh pair
 ```
 
-## Project structure (Day 13)
+## Project structure (Day 14)
 
 ```
 src/main/java/com/ahdyahmed/taskflow/
@@ -556,6 +553,12 @@ src/main/java/com/ahdyahmed/taskflow/
     ├── RefreshTokenRepository.java      # Day 13: + revokeAllForUser bulk update
     ├── VerificationTokenRepository.java # Day 12
     └── PasswordResetTokenRepository.java # Day 13
+
+src/test/java/com/ahdyahmed/taskflow/
+├── security/
+│   └── JwtServiceTest.java              # Day 14: generation, claim shape, tampered/expired/wrong-key rejection
+└── service/
+    └── AuthServiceTest.java             # Day 14: login success/failure branches, reset-password token states
 ```
 
 ## Roadmap
@@ -572,7 +575,8 @@ src/main/java/com/ahdyahmed/taskflow/
 | 8-9 | Ownership rules, edge cases | ✅ |
 | 10-11 | Account lockout, rate limiting on auth endpoints | ✅ |
 | 12-13 | Email verification, password reset (mocked email) | ✅ |
-| 14-16 | Unit + integration tests, security test matrix |  |
+| 14 | Unit tests — `JwtServiceTest`, `AuthServiceTest` | ✅ |
+| 15-16 | Security integration tests (`@SpringBootTest`/`MockMvc`, Testcontainers), coverage review | 🚧 |
 | 17-18 | OpenAPI docs, architecture diagram, final README |  |
 
 ## Design decisions (living section, updated as the project grows)
@@ -647,6 +651,10 @@ src/main/java/com/ahdyahmed/taskflow/
 - **The bulk-revoke query needs `flushAutomatically = true` *and* `clearAutomatically = true` together, and this was a real bug caught during review, not a hypothetical (Day 13):** `resetPassword()` sets the new password hash and marks the reset token used — both pending, unflushed entity changes — immediately before calling the bulk `@Modifying` `UPDATE` that revokes refresh tokens. A JPQL bulk update does not auto-flush pending entity state first (unlike a `SELECT`, which Hibernate's `FlushMode.AUTO` does reason about); without `flushAutomatically = true`, those two pending writes would still be sitting unflushed the moment `clearAutomatically = true` detached them from the persistence context — silently discarding the password change and leaving the reset token reusable, while the refresh-token revocation itself (a direct SQL `UPDATE`, unaffected by any of this) would still have succeeded. That combination — one part of a "single atomic operation" silently failing while the rest silently succeeds — is a bad way for a security-critical flow to break, and the specific reason it's called out this explicitly here.
 - **A successful reset also clears `failedLoginAttempts`/`lockedUntil` (Day 13):** not part of the roadmap's literal ask, but a natural extension of the same reasoning Day 10 already established for successful logins — proving control of the account (here, of its email inbox, arguably a stronger signal than a remembered password) is a legitimate reason to lift a lockout that exists to slow down someone who lacks that kind of access.
 - **`forgot-password`/`reset-password` don't check `enabled` (Day 13, deliberate scope boundary):** an unverified account can request and complete a password reset just like a verified one — clicking an emailed reset link is itself a proof of email ownership, arguably as strong a signal as clicking a verification link. What it does *not* do is also flip `enabled` to `true` as a side effect; that would be a reasonable follow-on feature (finishing a reset for a never-verified account could count as verifying it too), but it's not something the roadmap asked for on Day 13, and conflating "I proved I own this email" with "this account is now fully activated" is a real product decision worth making deliberately rather than as an incidental side effect of this change. Noted here so it reads as a boundary, not a gap: today, a successfully-reset-but-still-unverified account still can't log in until it's separately verified.
+- **`JwtServiceTest` instantiates `JwtService` directly, no Spring context (Day 14):** `JwtService`'s only collaborator is the plain `JwtProperties` record, so `new JwtService(new JwtProperties(...))` in `@BeforeEach` is the whole setup. Reaching for `@SpringBootTest` here would spin up the entire application context just to test a class with zero Spring dependencies at runtime — slow, and it would obscure that this class is trivially unit-testable in isolation, which is itself worth demonstrating.
+- **Expiry is tested with a real 1ms-lived token and a `Thread.sleep`, not a mocked clock (Day 14):** `JwtService` doesn't take a `Clock`/`Instant` supplier as a seam — it calls `new Date()` directly — so there's no clean injection point to fake "time has passed" without changing production code just to make it testable. A deliberately-tiny expiration plus a short sleep exercises the real `ExpiredJwtException` path through real `jjwt` parsing rather than asserting against a mock, at the cost of the test itself sleeping for a few milliseconds. If `JwtService` ever grows more time-sensitive logic, introducing a `Clock` seam then would be the right call; not worth it for one test today.
+- **`AuthServiceTest` verifies `LoginAttemptService` calls, not `LoginAttemptService`'s own math (Day 14):** `AuthService.login()`'s job is choosing *whether* to call `registerFailedAttempt`/`resetFailedAttempts` and with what argument; whether five failures actually locks the account, or whether an expired lock resets the counter, is `LoginAttemptService`'s own logic and belongs in a test of that class. Mixing the two into one `AuthServiceTest` would mean a change to the lockout threshold could break an "auth service" test for a reason that has nothing to do with `AuthService` itself. Flagged explicitly in this README rather than left as a silent gap — a `LoginAttemptServiceTest` is real, uncovered scope for Day 16.
+- **Reset-password's rejection tests assert `verify(..., never())`, not just that an exception was thrown (Day 14):** it would be easy to write `assertThrows(InvalidTokenException.class, ...)` for the expired/used/unknown-token cases and stop there, but the property actually worth locking down is that *nothing else happened* — no password encoded, no refresh tokens revoked — when the token check fails. An exception alone doesn't rule out a bug where a side effect fires before the check that should have prevented it; the `never()` verifications do.
 - More decisions will be documented here as new phases (testing, docs/polish) begin to raise them.
 
 ## License
