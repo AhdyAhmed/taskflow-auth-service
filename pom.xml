@@ -101,6 +101,28 @@
             <artifactId>spring-security-test</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!-- Day 15: Testcontainers Postgres for integration tests, so the
+             security test matrix runs against real Postgres behavior
+             (real constraints, real dialect) instead of H2's approximation
+             of it — consistent with Project 1's testing approach. Versions
+             come from spring-boot-dependencies' own Testcontainers BOM
+             import, not pinned here. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

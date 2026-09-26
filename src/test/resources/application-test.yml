@@ -1,0 +1,28 @@
+# Day 15. Activated by @ActiveProfiles("test") in AbstractIntegrationTest,
+# which replaces "dev" as the active profile rather than adding to it —
+# so the dev profile's block in the main application.yml (hardcoded
+# localhost:5433, and Day 3's data.sql seed rows) never applies here.
+# spring.datasource.* itself isn't set here at all: AbstractIntegrationTest
+# supplies it per-test-run via @DynamicPropertySource, pointed at whatever
+# port Testcontainers happens to publish the Postgres container on.
+spring:
+  jpa:
+    hibernate:
+      # create-drop, not the dev profile's "update": every test run starts
+      # from a schema Hibernate generates fresh against a brand-new
+      # container, so there's no accumulated schema drift to worry about
+      # between runs the way "update" can silently allow over time.
+      ddl-auto: create-drop
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+  sql:
+    init:
+      # The dev profile's seed.manager/seed.admin rows solve a local-dev
+      # bootstrap problem (see data.sql's own comment) that integration
+      # tests don't have — each test creates exactly the users it needs,
+      # with emails it controls, via UserRepository directly. Running the
+      # seed here would just be two extra rows every test has to be aware
+      # of and ignore.
+      mode: never
