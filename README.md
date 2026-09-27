@@ -2,29 +2,22 @@
 
 A secure REST API demonstrating JWT authentication, role-based access control, and ownership-based authorization in Spring Boot. This is Project 2 of a 3-project backend portfolio (Core REST API → **Auth & Authorization** → Production-grade Booking/Order System).
 
-**Status:** 🚧 Day 15 — "the highlight" per the roadmap: `SecurityIntegrationTest` now exercises the full RBAC/ownership/token-validation matrix through real HTTP against a real Testcontainers Postgres, not mocks. See [What's new in Day 15](#whats-new-in-day-15) below for the details, and [Roadmap](#roadmap) for what's still ahead.
+**Status:** 🚧 Day 16 — Phase 6 ("Testing") is complete. The two gaps Day 14/15's own READMEs flagged explicitly — `LoginAttemptService`'s counting math, and the refresh-token/rate-limiter behavior nothing had exercised yet — are closed. See [What's new in Day 16](#whats-new-in-day-16) below for the details and an honest coverage summary, and [Roadmap](#roadmap) for what's still ahead (docs and polish, Days 17-18).
 
 ---
 
-## What's new in Day 15
+## What's new in Day 16
 
-Day 14 proved each security-critical class's *own* branching logic in isolation, with everything mocked. Day 15 proves the pieces actually add up to the right behavior when wired together for real — a genuinely different failure mode: a typo in a `@PreAuthorize` bean name (`@projectSecurty` instead of `@projectSecurity`) compiles fine and is invisible to any mocked unit test, but breaks every request through it. Nothing here is mocked: real `SecurityFilterChain`, real controller → service → repository stack, real Postgres.
+The roadmap calls this "fill gaps + coverage review," not "hit a coverage number" — and the two real, previously-flagged gaps are exactly what got filled:
 
-- **Testcontainers Postgres, not H2** — `AbstractIntegrationTest` starts one `postgres:16-alpine` container (shared across the whole test class via a `static @Container` field) and points `spring.datasource.*` at it through `@DynamicPropertySource`. Consistent with Project 1's testing approach and the roadmap's explicit call for it: an ownership query built on Postgres-specific behavior that happens to also run on H2 isn't the same thing as knowing it works on Postgres.
-- **A dedicated `test` Spring profile** (`application-test.yml`), not the `dev` profile pointed at a different port. Activated via `@ActiveProfiles("test")`, which *replaces* `dev` rather than layering onto it — so Day 3's `data.sql` seed rows (meant to solve a local-dev bootstrap problem) never load here, and `ddl-auto` is `create-drop` instead of `update`, so every test run starts from a schema Hibernate generates fresh rather than one that's accumulated drift across dev sessions.
-- **The test matrix the roadmap asked for, and a few natural extensions of it:**
-  - Unauthenticated request → `401`, same `ApiErrorResponse` shape as everything else in the API (no separate error format for security-filter-chain rejections vs. controller-thrown ones)
-  - Wrong role entirely (`USER` hitting a `MANAGER`-gated endpoint, even as a genuine project member) → `403`
-  - Correct role but not *this resource's* owner (a `MANAGER` who owns Project B trying to update Project A) → `403`
-  - Correct role + owner → `200`, response body reflects the actual change
-  - Extended past the letter of the roadmap into `TaskSecurity`'s two-tier rule: an assignee can update their own task (`200`) but can't delete it — only the project owner/ADMIN can (`403`) — because "ownership rules" as a phase goal means proving the *shape* of the policy, not just the happy path of it
-  - A non-member reading a project they don't belong to → `403`, to cover the membership-vs-role distinction directly (being a valid, authenticated `USER` isn't sufficient; belonging to *this* project is a separate check)
-- **Account lockout, driven through the real endpoint five times, not asserted against a mock:** five wrong-password `POST /auth/login` calls, then a sixth call with the *correct* password — still `401`, with the exact same generic message as the wrong-password attempts. Proving that specific detail (identical message, not just "still rejected") is the point: Day 10's design explicitly avoids a distinct "account locked" response precisely so a locked-out attacker can't tell lockout apart from a wrong guess.
-- **Tampered, expired, and wrong-token-type JWTs, all three, all `401`:** tampered reuses Day 14's flip-the-last-character approach but now against `JwtAuthenticationFilter` in a real filter chain; expired builds a second, short-lived `JwtService` sharing the real signing secret (same technique as Day 14, needed again here since there's no clock-injection seam to fake elapsed time); and a new one — presenting a *refresh* token as if it were an access token, which `JwtAuthenticationFilter`'s explicit `isAccessToken()` check exists specifically to catch.
-- **A documented, deliberate constraint: the rate limiter is real too.** `RateLimitingFilter` isn't mocked out for these tests, which means every `POST /auth/login` across the whole test class draws from the same shared token bucket (capacity 20 per 60s, per `application.yml`). This class makes roughly 16 login calls total — comfortably under the cap today, flagged in `SecurityIntegrationTest`'s own javadoc so a future contributor adding more login-heavy tests doesn't chase a mysterious 429 without knowing why.
-- **Fixtures use randomly-suffixed emails, not fixed ones.** The Postgres container (and its schema) is shared across every test method in the class, so two tests both creating a user at `manager@test.dev` would collide on the unique-email constraint the moment tests stop running in perfect isolation from each other. Every `createUser()` call appends a fresh UUID instead.
+- **`LoginAttemptServiceTest` — the gap Day 14's README named directly.** `AuthServiceTest` (Day 14) only ever verified that `AuthService` *calls* `LoginAttemptService` correctly; the counting/locking arithmetic itself — first failure, incrementing below threshold, crossing `maxFailedAttempts` and actually locking, an already-locked account not extending its own lock, and a naturally-expired lock resetting to a clean slate on the next failure — had zero test coverage until today. Each case is asserted purely through the mutated `User` object's resulting state (`failedLoginAttempts`, `lockedUntil`), which is the method's entire actual contract.
+- **`RefreshTokenLifecycleIntegrationTest` — rotation and revocation, through the real endpoints.** Day 15's `SecurityIntegrationTest` covered token *validation* (tampered/expired/wrong-type) but never exercised `/auth/refresh` or `/auth/logout` themselves. Today's tests do: refreshing rotates to a genuinely new pair and immediately kills the old refresh token (a replayed, already-rotated token — the realistic "stolen refresh token" scenario — gets rejected, not silently accepted a second time); logging out revokes the token so a subsequent refresh attempt with it fails; and logout is confirmed idempotent both for an already-revoked token and for one the server never issued at all, matching `AuthService.logout()`'s own documented "no error on retry" contract.
+- **`RateLimitIntegrationTest` — the filter finally gets pushed past its threshold.** Every other test in this project makes a handful of auth calls, comfortably under the real `capacity: 20` from `application.yml` — which is deliberate on that file's part, so exploratory testing doesn't trip it by accident, but it also means nothing had ever actually seen a `429` come back. This test class overrides the capacity down to 3 via its own `@DynamicPropertySource` (see the class javadoc for why that's scoped safely to just this class's Spring context) and confirms three things: the 4th call in a window gets `429` with a `Retry-After` header; the bucket is keyed per client IP, not globally, using the `X-Forwarded-For` header `RateLimitingFilter` already trusts; and it's keyed per path too, so exhausting `/auth/login` doesn't cost that same client their `/auth/register` attempts.
+- **Coverage review — what Phase 6 actually covers now, stated honestly rather than as a percentage:**
+  - **Covered, unit + integration:** JWT generation/validation/expiry/tampering (`JwtServiceTest`, plus real-filter-chain versions in `SecurityIntegrationTest`); login's three branches and lockout bookkeeping calls (`AuthServiceTest`) *and* the lockout math itself (`LoginAttemptServiceTest`) *and* lockout through the real endpoint (`SecurityIntegrationTest`); password reset's token states (`AuthServiceTest`); the full RBAC/ownership/membership matrix (`SecurityIntegrationTest`); refresh rotation and logout revocation (`RefreshTokenLifecycleIntegrationTest`); rate limiting (`RateLimitIntegrationTest`).
+  - **Deliberately not covered yet, flagged rather than silently skipped:** email verification and resend-verification's own endpoints have no dedicated test class (only exercised indirectly, since every fixture bypasses them by inserting already-`enabled` users directly — see Day 15's design decisions for why); `AdminUserController`'s role-change endpoint has no test; Day 9's "manager removes a member with active tasks" edge-case behavior isn't asserted anywhere; and pagination/sorting on the listing endpoints is untested. None of these are security-critical in the way everything above is — they're correctness gaps, not authorization gaps — which is exactly the roadmap's distinction between "meaningful coverage on security-critical paths" and a blanket target. Worth a look before this becomes a resume-facing artifact, but they didn't belong in the phase whose whole point was proving the security claims specifically.
 
-Commit for today: `test: integration tests covering RBAC, ownership, and token validation`
+Commit for today: `test: refresh token revocation and rate-limit tests`
 
 ## What this project proves
 
@@ -487,7 +480,7 @@ curl -i -X POST http://localhost:8080/auth/login \
 # -> 200, a fresh access/refresh pair
 ```
 
-## Project structure (Day 15)
+## Project structure (Day 16)
 
 ```
 src/main/java/com/ahdyahmed/taskflow/
@@ -565,15 +558,18 @@ src/main/java/com/ahdyahmed/taskflow/
 
 src/test/java/com/ahdyahmed/taskflow/
 ├── security/
-│   └── JwtServiceTest.java              # Day 14: generation, claim shape, tampered/expired/wrong-key rejection
+│   └── JwtServiceTest.java                    # Day 14: generation, claim shape, tampered/expired/wrong-key rejection
 ├── service/
-│   └── AuthServiceTest.java             # Day 14: login success/failure branches, reset-password token states
+│   ├── AuthServiceTest.java                   # Day 14: login success/failure branches, reset-password token states
+│   └── LoginAttemptServiceTest.java           # Day 16: the counting/lockout arithmetic itself
 └── integration/
-    ├── AbstractIntegrationTest.java     # Day 15: Testcontainers Postgres + MockMvc scaffolding, shared by every IT
-    └── SecurityIntegrationTest.java     # Day 15: the full RBAC/ownership/lockout/token test matrix, real HTTP
+    ├── AbstractIntegrationTest.java           # Day 15: Testcontainers Postgres + MockMvc scaffolding, shared by every IT
+    ├── SecurityIntegrationTest.java           # Day 15: the full RBAC/ownership/lockout/token test matrix, real HTTP
+    ├── RefreshTokenLifecycleIntegrationTest.java # Day 16: rotation on refresh, revocation + idempotency on logout
+    └── RateLimitIntegrationTest.java          # Day 16: 429 after threshold, keyed per (ip, path)
 
 src/test/resources/
-└── application-test.yml                 # Day 15: test-profile overrides (create-drop, no dev seed data)
+└── application-test.yml                       # Day 15: test-profile overrides (create-drop, no dev seed data)
 ```
 
 ## Roadmap
@@ -592,7 +588,7 @@ src/test/resources/
 | 12-13 | Email verification, password reset (mocked email) | ✅ |
 | 14 | Unit tests — `JwtServiceTest`, `AuthServiceTest` | ✅ |
 | 15 | Security integration tests (`@SpringBootTest`/`MockMvc`, Testcontainers) | ✅ |
-| 16 | Fill gaps + coverage review (`LoginAttemptServiceTest`, refresh rotation/revocation, rate-limit 429) | 🚧 |
+| 16 | Fill gaps + coverage review (`LoginAttemptServiceTest`, refresh rotation/revocation, rate-limit 429) | ✅ |
 | 17-18 | OpenAPI docs, architecture diagram, final README |  |
 
 ## Design decisions (living section, updated as the project grows)
@@ -676,6 +672,11 @@ src/test/resources/
 - **Fixtures are inserted directly via `UserRepository`, not by walking `POST /auth/register` → `GET /auth/verify` for every test (Day 15):** those two endpoints are Day 12's own tested surface. Re-exercising them as a prerequisite for every RBAC/ownership fixture would make this phase's tests slower and, worse, make an unrelated regression in the verification flow show up as failures across dozens of security tests that have nothing to do with verification. Login, by contrast, *is* walked through the real `POST /auth/login` endpoint every time (`loginAndGetAccessToken`) — that path is exactly what's under test.
 - **The rate limiter runs live, uninstrumented, in every integration test (Day 15):** it would have been easy to exclude `RateLimitingFilter` from the test context (a `@MockBean`, or a Spring profile that swaps it out) so login-heavy tests never had to think about its 20-per-60s budget. That's precisely the kind of test-environment divergence Day 15 exists to eliminate — a filter that's mocked out in every test but real in production is a filter whose actual behavior has never been exercised end-to-end. The budget is tight enough to need documenting (see `SecurityIntegrationTest`'s javadoc) but not tight enough to justify weakening the test.
 - **Expired-token testing still has no clock-injection seam (Day 15, same root cause as Day 14):** `JwtService` calls `new Date()` directly rather than taking a `Clock`, so proving "expired" still means building a second `JwtService` with a 1ms expiration sharing the real signing secret, and sleeping briefly — the same technique Day 14's `JwtServiceTest` used, now against the real filter chain instead of the class in isolation. Repeating this rather than finally adding the `Clock` seam is a deliberate "not yet" — two tests needing it isn't a strong enough signal on its own to change production code whose only consumer so far is tests.
+- **`LoginAttemptServiceTest` asserts against the mutated `User` object's state, not Mockito verifications (Day 16):** unlike `AuthServiceTest`, which is entirely about *whether the right collaborator got called*, `LoginAttemptService`'s own logic is a pure state mutation — `verify(userRepository).findByEmail(...)` would prove nothing about whether the counting was correct. Reading `user.getFailedLoginAttempts()`/`getLockedUntil()` after the call directly checks the actual contract.
+- **The "reaches max attempts" test asserts a before/after time window, not an exact `LocalDateTime` (Day 16):** `registerFailedAttempt` calls `LocalDateTime.now()` internally with no clock seam (same limitation noted for `JwtService` on Days 14-15), so a test asserting the lock expiry equals one exact computed instant would be flaky by a few milliseconds depending on how fast the test runs. Capturing `now()` immediately before and after the call and asserting the result falls inside that window (each bounded to the nearest second) proves the same thing without the flakiness.
+- **`RateLimitIntegrationTest` overrides capacity via its own `@DynamicPropertySource`, not a lower value in `application-test.yml` (Day 16):** the latter would apply to every integration test class using the `test` profile, meaning `SecurityIntegrationTest`'s ~16 real login calls would suddenly start hitting a wall meant for a completely different test's purposes. Scoping the override to one class's own dynamic properties gives that class a distinct Spring context (and, since Postgres schema is `create-drop`, a fresh schema) without touching any other test's configuration.
+- **The 429 test asserts `Retry-After` is present and the message's shape, not an exact retry-seconds value (Day 16):** with `capacity: 3` refilled greedily over 60 seconds, the next token arrives roughly 20 seconds after exhaustion — but exactly how many nanoseconds remain when the assertion runs depends on timing that a test shouldn't be sensitive to. Pinning the exact number would make the test flake for reasons that have nothing to do with whether rate limiting actually works.
+- **`RateLimitIntegrationTest` uses `X-Forwarded-For` to simulate distinct client IPs rather than relying on MockMvc's real (identical) remote address across requests (Day 16):** `RateLimitingFilter` already trusts that header (a documented, deliberate single-instance-only trade-off — see the filter's own javadoc), which conveniently doubles as the only practical way to prove the bucket is genuinely keyed per-IP from inside a single MockMvc test process, where every request would otherwise appear to originate from the same address.
 - More decisions will be documented here as new phases (testing, docs/polish) begin to raise them.
 
 ## License
