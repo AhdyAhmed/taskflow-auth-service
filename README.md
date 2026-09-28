@@ -2,22 +2,21 @@
 
 A secure REST API demonstrating JWT authentication, role-based access control, and ownership-based authorization in Spring Boot. This is Project 2 of a 3-project backend portfolio (Core REST API → **Auth & Authorization** → Production-grade Booking/Order System).
 
-**Status:** 🚧 Day 16 — Phase 6 ("Testing") is complete. The two gaps Day 14/15's own READMEs flagged explicitly — `LoginAttemptService`'s counting math, and the refresh-token/rate-limiter behavior nothing had exercised yet — are closed. See [What's new in Day 16](#whats-new-in-day-16) below for the details and an honest coverage summary, and [Roadmap](#roadmap) for what's still ahead (docs and polish, Days 17-18).
+**Status:** 🚧 Day 17 — Phase 7 begins: `GET /swagger-ui.html` now serves a real, interactive OpenAPI doc, with a Bearer-JWT **Authorize** button that actually works end-to-end. See [What's new in Day 17](#whats-new-in-day-17) below for the details, and [Roadmap](#roadmap) for what's left (the architecture diagram and final README, Day 18).
 
 ---
 
-## What's new in Day 16
+## What's new in Day 17
 
-The roadmap calls this "fill gaps + coverage review," not "hit a coverage number" — and the two real, previously-flagged gaps are exactly what got filled:
+Phase 6 proved the security claims with tests; Phase 7 makes the API itself legible to someone who didn't write it. Today's scope is exactly the roadmap's two items — the security scheme, and example values — not a redesign of anything.
 
-- **`LoginAttemptServiceTest` — the gap Day 14's README named directly.** `AuthServiceTest` (Day 14) only ever verified that `AuthService` *calls* `LoginAttemptService` correctly; the counting/locking arithmetic itself — first failure, incrementing below threshold, crossing `maxFailedAttempts` and actually locking, an already-locked account not extending its own lock, and a naturally-expired lock resetting to a clean slate on the next failure — had zero test coverage until today. Each case is asserted purely through the mutated `User` object's resulting state (`failedLoginAttempts`, `lockedUntil`), which is the method's entire actual contract.
-- **`RefreshTokenLifecycleIntegrationTest` — rotation and revocation, through the real endpoints.** Day 15's `SecurityIntegrationTest` covered token *validation* (tampered/expired/wrong-type) but never exercised `/auth/refresh` or `/auth/logout` themselves. Today's tests do: refreshing rotates to a genuinely new pair and immediately kills the old refresh token (a replayed, already-rotated token — the realistic "stolen refresh token" scenario — gets rejected, not silently accepted a second time); logging out revokes the token so a subsequent refresh attempt with it fails; and logout is confirmed idempotent both for an already-revoked token and for one the server never issued at all, matching `AuthService.logout()`'s own documented "no error on retry" contract.
-- **`RateLimitIntegrationTest` — the filter finally gets pushed past its threshold.** Every other test in this project makes a handful of auth calls, comfortably under the real `capacity: 20` from `application.yml` — which is deliberate on that file's part, so exploratory testing doesn't trip it by accident, but it also means nothing had ever actually seen a `429` come back. This test class overrides the capacity down to 3 via its own `@DynamicPropertySource` (see the class javadoc for why that's scoped safely to just this class's Spring context) and confirms three things: the 4th call in a window gets `429` with a `Retry-After` header; the bucket is keyed per client IP, not globally, using the `X-Forwarded-For` header `RateLimitingFilter` already trusts; and it's keyed per path too, so exhausting `/auth/login` doesn't cost that same client their `/auth/register` attempts.
-- **Coverage review — what Phase 6 actually covers now, stated honestly rather than as a percentage:**
-  - **Covered, unit + integration:** JWT generation/validation/expiry/tampering (`JwtServiceTest`, plus real-filter-chain versions in `SecurityIntegrationTest`); login's three branches and lockout bookkeeping calls (`AuthServiceTest`) *and* the lockout math itself (`LoginAttemptServiceTest`) *and* lockout through the real endpoint (`SecurityIntegrationTest`); password reset's token states (`AuthServiceTest`); the full RBAC/ownership/membership matrix (`SecurityIntegrationTest`); refresh rotation and logout revocation (`RefreshTokenLifecycleIntegrationTest`); rate limiting (`RateLimitIntegrationTest`).
-  - **Deliberately not covered yet, flagged rather than silently skipped:** email verification and resend-verification's own endpoints have no dedicated test class (only exercised indirectly, since every fixture bypasses them by inserting already-`enabled` users directly — see Day 15's design decisions for why); `AdminUserController`'s role-change endpoint has no test; Day 9's "manager removes a member with active tasks" edge-case behavior isn't asserted anywhere; and pagination/sorting on the listing endpoints is untested. None of these are security-critical in the way everything above is — they're correctness gaps, not authorization gaps — which is exactly the roadmap's distinction between "meaningful coverage on security-critical paths" and a blanket target. Worth a look before this becomes a resume-facing artifact, but they didn't belong in the phase whose whole point was proving the security claims specifically.
+- **`springdoc-openapi-starter-webmvc-ui`, pinned to 2.6.0, not "latest."** Springdoc's own changelog states 2.7.0 bumped its target to Spring Boot 3.4.0; this project pins Boot 3.3.5 (see `pom.xml`'s `<parent>`), and 2.6.0 is the last line built against that generation. Taking the newest springdoc version without checking would have quietly pulled in a Spring Framework/Boot version mismatch — worth the extra `web_search` before touching `pom.xml`, not the FAQ page mattering.
+- **A Bearer JWT security scheme that Swagger UI can actually use, not just display.** `OpenApiConfig` registers `bearerAuth` as an `HTTP`/`bearer`/`JWT` scheme and applies it as the *default* for every operation — correct for `ProjectController`/`TaskController`/`AdminUserController`, all genuinely token-gated, but wrong for `AuthController`, none of whose eight endpoints require one (every single one is on `SecurityConfig`'s `PUBLIC_AUTH_ENDPOINTS` list). `AuthController` carries a class-level `@SecurityRequirements` (empty, not omitted) specifically to opt back out of that default — the difference between Swagger UI showing a padlock on `/auth/login` that's misleading versus one that's accurate.
+- **The docs themselves had to be added to `SecurityConfig`'s public paths.** `/v3/api-docs/**` and `/swagger-ui/**` went into a new `PUBLIC_DOC_ENDPOINTS` array — deliberately not folded into `PUBLIC_AUTH_ENDPOINTS`, since "public because you can't be logged in yet" and "public because it's documentation tooling" are different reasons to be on an allowlist, and conflating them would make a future reader guess wrong about why either entry exists. Without this, the catch-all `anyRequest().authenticated()` would 401 Swagger UI's own page load — the standard first surprise with springdoc + Spring Security, avoided here rather than debugged after the fact.
+- **Every request/response DTO now carries `@Schema(example = ...)`** — the roadmap's second explicit ask. Swagger UI's "Try it out" now pre-fills a working `TaskCreateRequest` body instead of an empty shell the caller has to guess the shape of; response examples (`AuthResponse`, `ProjectResponse`, `TaskResponse`, `ApiErrorResponse`, `UserResponse`) do the same for what comes back, including a realistic `fieldErrors` example on `ApiErrorResponse` for the one field that's `null` most of the time.
+- **`@Operation` summaries on every endpoint, `@Tag` per controller** — not required by the roadmap's two bullet points, but a Swagger UI whose endpoint list reads `POST /auth/login` with no elaboration and one that explains *why* a locked account and a wrong password return the identical message are very different documents for the "prove you understand security" goal this whole project exists for. Descriptions are pulled from claims already made in this README/the code's own javadoc, not invented fresh — so nothing new is being asserted here that Day 6-13's commits didn't already establish and Day 14-16's tests didn't already verify.
 
-Commit for today: `test: refresh token revocation and rate-limit tests`
+Commit for today: `docs: OpenAPI documentation with JWT bearer auth scheme`
 
 ## What this project proves
 
@@ -60,16 +59,22 @@ mvn spring-boot:run
 
 The app starts on `http://localhost:8080` using the `dev` Spring profile (active by default), which points at the Postgres container from step 1.
 
-### 3. Stop Postgres
+### 3. Explore the API
+
+Open `http://localhost:8080/swagger-ui.html`. Every endpoint is documented there with example request/response bodies — click **Authorize**, paste an `accessToken` from a `POST /auth/login` response (no `Bearer ` prefix needed, Swagger UI adds it), and every subsequent "Try it out" call sends it automatically. `AuthController`'s own endpoints don't need this at all — try `/auth/register` or `/auth/login` straight away.
+
+### 4. Stop Postgres
 
 ```bash
 docker compose down          # stop the container, keep data
 docker compose down -v       # stop and wipe the volume (fresh DB next time)
 ```
 
-## API (Day 13)
+## API (Day 17)
 
 Only `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout`, `/auth/verify`, `/auth/resend-verification`, `/auth/forgot-password`, and `/auth/reset-password` are public. Everything else needs `Authorization: Bearer <accessToken>` at minimum. Beyond that, most rules are no longer role-only — see the "Auth" column below, and [What's new in Day 13](#whats-new-in-day-13) for what changed most recently.
+
+This table is a quick-skim reference; for the interactive version with example request/response bodies and a working **Authorize** button, run the app and open `http://localhost:8080/swagger-ui.html` (see [Getting started](#getting-started) above).
 
 | Method | Path | Auth |
 |---|---|---|
@@ -480,7 +485,7 @@ curl -i -X POST http://localhost:8080/auth/login \
 # -> 200, a fresh access/refresh pair
 ```
 
-## Project structure (Day 16)
+## Project structure (Day 17)
 
 ```
 src/main/java/com/ahdyahmed/taskflow/
@@ -494,8 +499,9 @@ src/main/java/com/ahdyahmed/taskflow/
 │   ├── RateLimitProperties.java         # Day 11: app.security.rate-limit.* bound as a record
 │   ├── VerificationProperties.java      # Day 12: app.security.verification.* bound as a record
 │   ├── PasswordResetProperties.java     # Day 13: app.security.password-reset.* bound as a record
-│   ├── SecurityConfig.java              # stateless sessions, JWT + rate-limit filters, only /auth/* public
-│   └── MethodSecurityConfig.java        # @EnableMethodSecurity + role hierarchy (ADMIN > MANAGER > USER)
+│   ├── SecurityConfig.java              # stateless sessions, JWT + rate-limit filters; Day 17: + public doc paths
+│   ├── MethodSecurityConfig.java        # @EnableMethodSecurity + role hierarchy (ADMIN > MANAGER > USER)
+│   └── OpenApiConfig.java               # Day 17: OpenAPI info + bearerAuth security scheme, applied globally
 ├── email/
 │   ├── EmailService.java                # Day 12: send(to, subject, body) — transport-only interface
 │   └── LoggingEmailService.java         # Day 12: the only impl — logs instead of sending
@@ -513,10 +519,10 @@ src/main/java/com/ahdyahmed/taskflow/
 │   ├── ProjectSecurity.java             # Day 8: @projectSecurity.isOwner/isMember for @PreAuthorize
 │   └── TaskSecurity.java                # Day 8: @taskSecurity.isOwnerOrAssignee/isProjectOwner/isProjectMember
 ├── controller/
-│   ├── AuthController.java              # + Day 12: GET /verify, POST /resend-verification; Day 13: POST /forgot-password, /reset-password
-│   ├── AdminUserController.java         # ADMIN-only: list users, change role
-│   ├── ProjectController.java           # + Day 8: POST/DELETE /{id}/members/{userId}
-│   └── TaskController.java
+│   ├── AuthController.java              # + Day 12: GET /verify, POST /resend-verification; Day 13: POST /forgot-password, /reset-password; Day 17: @Tag + @SecurityRequirements (public)
+│   ├── AdminUserController.java         # ADMIN-only: list users, change role; Day 17: @Tag + @Operation
+│   ├── ProjectController.java           # + Day 8: POST/DELETE /{id}/members/{userId}; Day 17: @Tag + @Operation
+│   └── TaskController.java              # Day 17: @Tag + @Operation
 ├── service/
 │   ├── AuthService.java                 # Day 10: delegates lockout tracking; Day 12: verification flow; Day 13: password reset flow
 │   ├── LoginAttemptService.java         # Day 10: lockout bookkeeping, deliberately its own bean — see javadoc
@@ -536,7 +542,8 @@ src/main/java/com/ahdyahmed/taskflow/
 │   ├── request/   # RegisterRequest, LoginRequest, RefreshRequest, ChangeRoleRequest, EmailRequest, ResetPasswordRequest, ProjectCreateRequest, ProjectUpdateRequest, TaskCreateRequest, TaskUpdateRequest
 │   │              # (Day 8: ProjectCreateRequest/TaskCreateRequest no longer take ownerId/createdById — derived from the authenticated principal)
 │   │              # (Day 12: EmailRequest backs both /auth/resend-verification and Day 13's /auth/forgot-password)
-│   └── response/  # UserResponse, AuthResponse, ProjectResponse, TaskResponse, ApiErrorResponse
+│   │              # (Day 17: every field carries @Schema(example = ...))
+│   └── response/  # UserResponse, AuthResponse, ProjectResponse, TaskResponse, ApiErrorResponse — Day 17: every field carries @Schema(example = ...)
 ├── exception/
 │   ├── ResourceNotFoundException.java
 │   ├── EmailAlreadyInUseException.java
@@ -589,7 +596,8 @@ src/test/resources/
 | 14 | Unit tests — `JwtServiceTest`, `AuthServiceTest` | ✅ |
 | 15 | Security integration tests (`@SpringBootTest`/`MockMvc`, Testcontainers) | ✅ |
 | 16 | Fill gaps + coverage review (`LoginAttemptServiceTest`, refresh rotation/revocation, rate-limit 429) | ✅ |
-| 17-18 | OpenAPI docs, architecture diagram, final README |  |
+| 17 | OpenAPI docs (springdoc, Bearer JWT scheme, DTO examples) | ✅ |
+| 18 | Architecture diagram, final README |  |
 
 ## Design decisions (living section, updated as the project grows)
 
@@ -677,6 +685,10 @@ src/test/resources/
 - **`RateLimitIntegrationTest` overrides capacity via its own `@DynamicPropertySource`, not a lower value in `application-test.yml` (Day 16):** the latter would apply to every integration test class using the `test` profile, meaning `SecurityIntegrationTest`'s ~16 real login calls would suddenly start hitting a wall meant for a completely different test's purposes. Scoping the override to one class's own dynamic properties gives that class a distinct Spring context (and, since Postgres schema is `create-drop`, a fresh schema) without touching any other test's configuration.
 - **The 429 test asserts `Retry-After` is present and the message's shape, not an exact retry-seconds value (Day 16):** with `capacity: 3` refilled greedily over 60 seconds, the next token arrives roughly 20 seconds after exhaustion — but exactly how many nanoseconds remain when the assertion runs depends on timing that a test shouldn't be sensitive to. Pinning the exact number would make the test flake for reasons that have nothing to do with whether rate limiting actually works.
 - **`RateLimitIntegrationTest` uses `X-Forwarded-For` to simulate distinct client IPs rather than relying on MockMvc's real (identical) remote address across requests (Day 16):** `RateLimitingFilter` already trusts that header (a documented, deliberate single-instance-only trade-off — see the filter's own javadoc), which conveniently doubles as the only practical way to prove the bucket is genuinely keyed per-IP from inside a single MockMvc test process, where every request would otherwise appear to originate from the same address.
+- **springdoc pinned to 2.6.0 rather than whatever the latest release is (Day 17):** checked springdoc's own changelog before adding the dependency rather than assuming "newest is fine" — 2.7.0 explicitly bumped its target to Spring Boot 3.4.0, and this project has pinned 3.3.5 since Day 1. Taking the latest version without checking would have been the kind of dependency mismatch that fails at context-startup with a confusing error, days after the fact, for a reason that has nothing to do with anything actually written in this project.
+- **The Bearer scheme is a global default, opted out of per-controller, rather than opted into per-endpoint (Day 17):** the alternative — leaving no global security requirement and adding `@SecurityRequirement(name = "bearerAuth")` to every `ProjectController`/`TaskController`/`AdminUserController` method individually — is more entries to keep in sync and an easy one to forget on a newly-added endpoint (it would silently document as "public" something that's actually gated by Spring Security regardless). A global default that `AuthController` opts out of, once, at the class level, means a new authenticated endpoint is accurate by default and a new public one has to say so explicitly — the safer direction to make the default lean.
+- **`PUBLIC_DOC_ENDPOINTS` is a separate array in `SecurityConfig`, not folded into `PUBLIC_AUTH_ENDPOINTS` (Day 17):** both end up calling the same `permitAll()`, so merging them would work identically at runtime. Keeping them apart is purely for the next person reading this file — `PUBLIC_AUTH_ENDPOINTS`' reasoning ("you can't require a login to log in") doesn't apply to `/swagger-ui/**` at all, and a single merged array would force a reader to hold two different justifications for entries that look otherwise identical.
+- **`@Operation` descriptions restate claims already made elsewhere in this project, not new ones (Day 17):** every description on `AuthController`'s endpoints — the identical-message lockout/wrong-password behavior, the reset-password refresh-token invalidation, logout's idempotency — is something Day 6-13's commits already implemented and Day 14-16's tests already verified. Writing genuinely new behavioral claims into Swagger annotations, unverified by anything, would be documentation drifting ahead of what the code actually does — the exact failure mode API docs are supposed to prevent, not fall into.
 - More decisions will be documented here as new phases (testing, docs/polish) begin to raise them.
 
 ## License

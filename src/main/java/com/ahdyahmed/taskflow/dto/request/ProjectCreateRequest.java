@@ -1,5 +1,6 @@
 package com.ahdyahmed.taskflow.dto.request;
 
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import lombok.Getter;
@@ -18,10 +19,12 @@ import lombok.Setter;
 @Setter
 public class ProjectCreateRequest {
 
+    @Schema(example = "TaskFlow Backend Rewrite")
     @NotBlank
     @Size(max = 255)
     private String name;
 
+    @Schema(example = "Migrate the legacy REST API to the new Spring Boot service.")
     @Size(max = 1000)
     private String description;
 }

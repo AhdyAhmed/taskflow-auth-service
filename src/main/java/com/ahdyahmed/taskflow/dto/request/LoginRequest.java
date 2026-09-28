@@ -1,19 +1,19 @@
 package com.ahdyahmed.taskflow.dto.request;
 
-import jakarta.validation.constraints.Email;
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotBlank;
 import lombok.Getter;
 import lombok.Setter;
 
-/** No @StrongPassword here — that's a registration-time rule, not a login-time one. */
 @Getter
 @Setter
 public class LoginRequest {
 
+    @Schema(example = "alice@taskflow.dev")
     @NotBlank
-    @Email
     private String email;
 
+    @Schema(example = "Sup3rSecretPassword!")
     @NotBlank
     private String password;
 }

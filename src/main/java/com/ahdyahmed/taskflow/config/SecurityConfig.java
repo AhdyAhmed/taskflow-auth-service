@@ -44,6 +44,17 @@ public class SecurityConfig {
             "/auth/forgot-password", "/auth/reset-password"
     };
 
+    // Day 17: the docs themselves have to be reachable before anyone has
+    // a token to try them with — same principle as PUBLIC_AUTH_ENDPOINTS
+    // above, just for tooling instead of the auth flow itself. Kept as a
+    // separate array (rather than folded into PUBLIC_AUTH_ENDPOINTS)
+    // since these aren't auth endpoints at all, and conflating "public
+    // because you can't be logged in yet" with "public because it's
+    // documentation" would muddy why each entry is here.
+    private static final String[] PUBLIC_DOC_ENDPOINTS = {
+            "/v3/api-docs", "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html"
+    };
+
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
     private final RateLimitingFilter rateLimitingFilter;
     private final RestAuthenticationEntryPoint restAuthenticationEntryPoint;
@@ -56,6 +67,7 @@ public class SecurityConfig {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(PUBLIC_AUTH_ENDPOINTS).permitAll()
+                        .requestMatchers(PUBLIC_DOC_ENDPOINTS).permitAll()
                         .anyRequest().authenticated())
                 .exceptionHandling(handling -> handling
                         .authenticationEntryPoint(restAuthenticationEntryPoint)

@@ -1,6 +1,7 @@
 package com.ahdyahmed.taskflow.dto.request;
 
 import com.ahdyahmed.taskflow.validation.StrongPassword;
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
@@ -17,11 +18,13 @@ import lombok.Setter;
 @Setter
 public class RegisterRequest {
 
+    @Schema(example = "alice@taskflow.dev")
     @NotBlank
     @Email
     @Size(max = 255)
     private String email;
 
+    @Schema(example = "Sup3rSecretPassword!", description = "At least 8 characters, with an uppercase letter, a lowercase letter, and a digit — see @StrongPassword.")
     @NotBlank
     @StrongPassword
     private String password;

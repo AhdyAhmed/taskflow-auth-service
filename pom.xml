@@ -38,6 +38,16 @@
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
 
+        <!-- Day 17: 2.6.0, not the latest — springdoc's own changelog states
+             2.7.0 bumped its target to Spring Boot 3.4.0, while this project
+             pins 3.3.5 (see the parent above). 2.6.0 is the last line built
+             against the 3.3.x generation. -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+            <version>2.6.0</version>
+        </dependency>
+
         <!-- Security (wired up starting Day 4-5; included now so the -->
         <!-- dependency graph doesn't change mid-way through the project) -->
         <dependency>
