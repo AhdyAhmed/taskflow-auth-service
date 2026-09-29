@@ -2,21 +2,19 @@
 
 A secure REST API demonstrating JWT authentication, role-based access control, and ownership-based authorization in Spring Boot. This is Project 2 of a 3-project backend portfolio (Core REST API → **Auth & Authorization** → Production-grade Booking/Order System).
 
-**Status:** 🚧 Day 17 — Phase 7 begins: `GET /swagger-ui.html` now serves a real, interactive OpenAPI doc, with a Bearer-JWT **Authorize** button that actually works end-to-end. See [What's new in Day 17](#whats-new-in-day-17) below for the details, and [Roadmap](#roadmap) for what's left (the architecture diagram and final README, Day 18).
+**Status:** ✅ Day 18 — roadmap complete. All 18 days shipped, from Day 1's project skeleton through Day 17's OpenAPI docs. See [What's new in Day 18](#whats-new-in-day-18) below for today's close-out, [Architecture](#architecture) for the diagrams, and [Roadmap](#roadmap) for the full day-by-day record.
 
 ---
 
-## What's new in Day 17
+## What's new in Day 18
 
-Phase 6 proved the security claims with tests; Phase 7 makes the API itself legible to someone who didn't write it. Today's scope is exactly the roadmap's two items — the security scheme, and example values — not a redesign of anything.
+The roadmap's own framing for today is worth repeating: "this is what actually gets read." Nothing here is new *behavior* — Day 18 touches only this README, per the roadmap's own final commit description — it's making everything the previous 17 days actually built legible to someone who didn't watch it happen.
 
-- **`springdoc-openapi-starter-webmvc-ui`, pinned to 2.6.0, not "latest."** Springdoc's own changelog states 2.7.0 bumped its target to Spring Boot 3.4.0; this project pins Boot 3.3.5 (see `pom.xml`'s `<parent>`), and 2.6.0 is the last line built against that generation. Taking the newest springdoc version without checking would have quietly pulled in a Spring Framework/Boot version mismatch — worth the extra `web_search` before touching `pom.xml`, not the FAQ page mattering.
-- **A Bearer JWT security scheme that Swagger UI can actually use, not just display.** `OpenApiConfig` registers `bearerAuth` as an `HTTP`/`bearer`/`JWT` scheme and applies it as the *default* for every operation — correct for `ProjectController`/`TaskController`/`AdminUserController`, all genuinely token-gated, but wrong for `AuthController`, none of whose eight endpoints require one (every single one is on `SecurityConfig`'s `PUBLIC_AUTH_ENDPOINTS` list). `AuthController` carries a class-level `@SecurityRequirements` (empty, not omitted) specifically to opt back out of that default — the difference between Swagger UI showing a padlock on `/auth/login` that's misleading versus one that's accurate.
-- **The docs themselves had to be added to `SecurityConfig`'s public paths.** `/v3/api-docs/**` and `/swagger-ui/**` went into a new `PUBLIC_DOC_ENDPOINTS` array — deliberately not folded into `PUBLIC_AUTH_ENDPOINTS`, since "public because you can't be logged in yet" and "public because it's documentation tooling" are different reasons to be on an allowlist, and conflating them would make a future reader guess wrong about why either entry exists. Without this, the catch-all `anyRequest().authenticated()` would 401 Swagger UI's own page load — the standard first surprise with springdoc + Spring Security, avoided here rather than debugged after the fact.
-- **Every request/response DTO now carries `@Schema(example = ...)`** — the roadmap's second explicit ask. Swagger UI's "Try it out" now pre-fills a working `TaskCreateRequest` body instead of an empty shell the caller has to guess the shape of; response examples (`AuthResponse`, `ProjectResponse`, `TaskResponse`, `ApiErrorResponse`, `UserResponse`) do the same for what comes back, including a realistic `fieldErrors` example on `ApiErrorResponse` for the one field that's `null` most of the time.
-- **`@Operation` summaries on every endpoint, `@Tag` per controller** — not required by the roadmap's two bullet points, but a Swagger UI whose endpoint list reads `POST /auth/login` with no elaboration and one that explains *why* a locked account and a wrong password return the identical message are very different documents for the "prove you understand security" goal this whole project exists for. Descriptions are pulled from claims already made in this README/the code's own javadoc, not invented fresh — so nothing new is being asserted here that Day 6-13's commits didn't already establish and Day 14-16's tests didn't already verify.
+- **Architecture diagrams** — a layered flowchart (client → filter chain → controllers → services → repositories → Postgres) and an auth-flow sequence diagram (register → verify → login → refresh rotation → logout), both as Mermaid rather than an exported draw.io PNG. See [Architecture](#architecture) above, and the design decision below for why Mermaid specifically.
+- **Four trade-offs the roadmap names explicitly, pulled together and stated as trade-offs** rather than left implicit across two dozen day-by-day entries: why refresh tokens are stored server-side instead of relying on pure stateless JWTs, why the lockout window is 15 minutes specifically (not just that it resets correctly, which Day 10 already covered), a consolidated restatement of the rotation rationale, and — the one genuinely new admission in this project — what a real multi-instance production deployment would still need that this one deliberately doesn't have. See the last four entries in [Design decisions](#design-decisions-living-section-updated-as-the-project-grows).
+- **"How to run locally" and the Swagger UI link were already done** — Day 1's docker-compose setup and Day 17's Getting Started section already cover both, so there's nothing to add here; re-verified both are still accurate rather than rewritten for the sake of it.
 
-Commit for today: `docs: OpenAPI documentation with JWT bearer auth scheme`
+Commit for today: `docs: comprehensive README with architecture diagram and design rationale`
 
 ## What this project proves
 
@@ -24,6 +22,66 @@ Commit for today: `docs: OpenAPI documentation with JWT bearer auth scheme`
 - Authorization implemented as testable policy (ownership-check beans used from `@PreAuthorize`), not scattered `if` statements in controllers
 - Unprompted handling of account abuse: lockout after repeated failed logins, rate limiting on auth endpoints
 - Security-specific integration tests (401 vs 403 vs owner-only 200, locked accounts, tampered/expired tokens)
+
+## Architecture
+
+Rendered as Mermaid rather than an exported draw.io PNG — GitHub renders `mermaid` code fences natively, so this stays plain text that diffs cleanly and can't drift out of sync with a binary image nobody remembers to re-export. See [Design decisions](#design-decisions-living-section-updated-as-the-project-grows) for that trade-off stated explicitly.
+
+**Layers.** Controllers are thin adapters (see the Day 8 design decision on why authorization lives in the service layer, not here); the security filter chain runs before any of them.
+
+```mermaid
+flowchart TD
+    Client["Client / Swagger UI"]
+
+    subgraph Chain["Security filter chain — SecurityConfig"]
+        direction LR
+        RL["RateLimitingFilter<br/>(Day 11)"] --> JWT["JwtAuthenticationFilter<br/>(Day 5)"]
+    end
+
+    Controllers["Controllers<br/>Auth · Project · Task · AdminUser<br/>(thin — no authorization logic)"]
+    Services["Services<br/>+ @PreAuthorize: role + ownership/membership checks<br/>(ProjectSecurity / TaskSecurity beans)"]
+    Repos["Repositories<br/>Spring Data JPA"]
+    DB[("Postgres")]
+
+    Client --> RL
+    JWT --> Controllers --> Services --> Repos --> DB
+```
+
+**Auth flow.** Register → verify → login → the access/refresh cycle → logout, the sequence the roadmap asks this diagram to show:
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant A as AuthController / AuthService
+    participant E as LoggingEmailService
+    participant DB as Postgres
+
+    C->>A: POST /auth/register
+    A->>DB: save User(enabled=false) + VerificationToken (hashed)
+    A->>E: "send" verification link (mocked, logged)
+    A-->>C: 201 Created
+
+    C->>A: GET /auth/verify?token=...
+    A->>DB: set enabled = true
+    A-->>C: 200 OK
+
+    C->>A: POST /auth/login
+    A->>DB: check credentials, lockout, enabled (Spring Security PreAuthenticationChecks)
+    A->>DB: save RefreshToken (hashed)
+    A-->>C: 200 { accessToken (15 min), refreshToken (7 days) }
+
+    loop every request while accessToken is valid
+        C->>A: Authorization: Bearer accessToken
+    end
+
+    C->>A: POST /auth/refresh { refreshToken }
+    A->>DB: revoke old RefreshToken, save a new one (rotation)
+    A-->>C: 200 { new accessToken, new refreshToken }
+
+    C->>A: POST /auth/logout { refreshToken }
+    A->>DB: revoke RefreshToken
+    A-->>C: 204 No Content
+```
 
 ## Tech stack
 
@@ -597,7 +655,7 @@ src/test/resources/
 | 15 | Security integration tests (`@SpringBootTest`/`MockMvc`, Testcontainers) | ✅ |
 | 16 | Fill gaps + coverage review (`LoginAttemptServiceTest`, refresh rotation/revocation, rate-limit 429) | ✅ |
 | 17 | OpenAPI docs (springdoc, Bearer JWT scheme, DTO examples) | ✅ |
-| 18 | Architecture diagram, final README |  |
+| 18 | Architecture diagram, final README | ✅ |
 
 ## Design decisions (living section, updated as the project grows)
 
@@ -689,7 +747,12 @@ src/test/resources/
 - **The Bearer scheme is a global default, opted out of per-controller, rather than opted into per-endpoint (Day 17):** the alternative — leaving no global security requirement and adding `@SecurityRequirement(name = "bearerAuth")` to every `ProjectController`/`TaskController`/`AdminUserController` method individually — is more entries to keep in sync and an easy one to forget on a newly-added endpoint (it would silently document as "public" something that's actually gated by Spring Security regardless). A global default that `AuthController` opts out of, once, at the class level, means a new authenticated endpoint is accurate by default and a new public one has to say so explicitly — the safer direction to make the default lean.
 - **`PUBLIC_DOC_ENDPOINTS` is a separate array in `SecurityConfig`, not folded into `PUBLIC_AUTH_ENDPOINTS` (Day 17):** both end up calling the same `permitAll()`, so merging them would work identically at runtime. Keeping them apart is purely for the next person reading this file — `PUBLIC_AUTH_ENDPOINTS`' reasoning ("you can't require a login to log in") doesn't apply to `/swagger-ui/**` at all, and a single merged array would force a reader to hold two different justifications for entries that look otherwise identical.
 - **`@Operation` descriptions restate claims already made elsewhere in this project, not new ones (Day 17):** every description on `AuthController`'s endpoints — the identical-message lockout/wrong-password behavior, the reset-password refresh-token invalidation, logout's idempotency — is something Day 6-13's commits already implemented and Day 14-16's tests already verified. Writing genuinely new behavioral claims into Swagger annotations, unverified by anything, would be documentation drifting ahead of what the code actually does — the exact failure mode API docs are supposed to prevent, not fall into.
-- More decisions will be documented here as new phases (testing, docs/polish) begin to raise them.
+- **Mermaid diagrams, not an exported draw.io PNG (Day 18):** the roadmap's own wording calls for "a simple draw.io export" — GitHub-native Mermaid was chosen instead, deliberately, not as a shortcut. A PNG needs a separate tool, a separate export step someone has to remember to redo after the architecture changes, and produces a binary diff every time it does; the two `mermaid` fences in [Architecture](#architecture) are plain text, render natively in GitHub's own README viewer with no export step at all, and if a reviewer wants to check the diagram is still accurate, they're reading the same kind of text this whole README already is instead of trusting that a PNG got regenerated.
+- **Why refresh tokens are stored server-side (hashed) instead of relying on purely stateless JWTs for everything, stated as the trade-off it is (Day 18, consolidating Day 6/13's reasoning):** a pure-stateless design — no `RefreshToken` table, both tokens just JWTs with different expiries — would mean *nothing* about a token is revocable before it naturally expires; a stolen refresh token would stay valid for its full 7-day life no matter what the legitimate user does afterward, including logging out or resetting their password. Server-side storage buys immediate revocability (Day 6's rotation, Day 13's reset-triggered mass-revocation) at a real, accepted cost: a DB write on every login/refresh, and the API is no longer *fully* stateless — this service now needs a database in the loop for the refresh path specifically, not just for domain data. The trade was made deliberately in the direction of revocability, because "can't be revoked" is a worse property for a security-focused project to ship than "isn't perfectly stateless."
+- **Why the lockout window is 15 minutes, specifically, not just that the counting logic is correct (Day 18; Day 10 covered the mechanics, not this):** long enough that exhaustively guessing a password becomes impractical — 5 attempts per 15 minutes is roughly 480 guesses/day, nowhere near enough to brute-force even a weak password — but short enough that a real user who locked themselves out by mistyping their own password repeatedly gets back in within a coffee break, not a day, and specifically doesn't have to fall back on `/auth/forgot-password` just to recover from their own typo. Both failure modes (too short = doesn't slow an attacker; too long = punishes legitimate users disproportionately for the more common failure) were weighed against each other; 15 minutes is a starting point that would legitimately need tuning against real login-failure telemetry in production, not a number treated as sacred.
+- **Refresh rotation, restated as the trade-off it is rather than just the mechanism (Day 18; Day 6/16 already covered what it does):** the alternative — a refresh token valid for its full 7 days regardless of how many times it's used — is simpler (no `RefreshToken` row needs updating on every refresh, just read-and-check) but means a stolen refresh token is a 7-day standing problem with no way to detect it happened short of the legitimate user noticing unexpected activity. Rotation converts "stolen token, valid until it naturally expires" into "stolen token, dead the instant either party uses it once" — at the cost of one extra write per refresh call and the small added complexity of Day 15/16's tests needing to prove the old token actually dies, not just that a new one is issued.
+- **What a real multi-instance production deployment would still need that this one deliberately doesn't have (Day 18):** two concrete gaps, both already flagged at the code level and pulled together here since the roadmap specifically asks for this comparison. First, `RateLimitingFilter`'s bucket state is in-memory and per-instance (see the filter's own javadoc) — behind a load balancer with N instances, an attacker effectively gets N× the configured limit; the fix is moving bucket state to Redis, which Bucket4j supports natively, not a redesign of the rate-limiting logic itself. Second, and not discussed anywhere else in this README until now: **there is no distributed access-token blacklist.** Logout and password-reset revoke *refresh* tokens server-side, but the *access* token issued alongside them is a stateless JWT that stays valid for the rest of its 15-minute life regardless — "log this user out right now, everywhere, immediately" isn't a thing this API can currently do; the closest it gets is "within 15 minutes at the very most." That's an accepted trade-off for a portfolio project (short TTL is the mitigation, and checking every single authenticated request against a shared revocation store has a real latency/complexity cost of its own, which Day 6's design decision on live-role-checking already discusses the shape of), but a production system with a genuine "immediately kick this user out" requirement would need one — a Redis set of revoked token ids (`jti` claims, which this project's JWTs don't currently even carry), checked in `JwtAuthenticationFilter` alongside the existing `isValid()`/`isAccessToken()` checks.
+- **Roadmap complete as of today.** Every phase from the original plan shipped: domain model and CRUD (Days 1-3), the JWT auth core (Days 4-6), RBAC and ownership (Days 7-9), account protection (Days 10-11), email verification and password reset (Days 12-13), the full testing phase (Days 14-16), and docs/polish (Days 17-18). This section stays open for anything that comes up after — a dependency bump, a bug found in use, a gap noticed later — but there's no more roadmap driving new entries into it day by day.
 
 ## License
 
