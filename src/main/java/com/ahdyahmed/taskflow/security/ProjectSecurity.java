@@ -5,6 +5,7 @@ import com.ahdyahmed.taskflow.repository.ProjectRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Day 8. Referenced from {@code @PreAuthorize} as {@code @projectSecurity}
@@ -20,6 +21,7 @@ import org.springframework.stereotype.Component;
  * short-circuits {@code hasRole('ADMIN') or ...}), so an admin still gets
  * a real 404 for a project that truly doesn't exist.
  */
+@Transactional(readOnly = true)
 @Component("projectSecurity")
 @RequiredArgsConstructor
 public class ProjectSecurity {

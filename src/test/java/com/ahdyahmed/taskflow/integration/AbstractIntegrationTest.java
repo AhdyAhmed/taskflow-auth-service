@@ -19,8 +19,6 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 import java.util.UUID;
@@ -36,22 +34,30 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * exercised together, which is the whole point of Day 15 versus Day 14's
  * mocked-everything unit tests.
  * <p>
- * One container, started once and shared across every test class that
- * extends this (Testcontainers reuses a {@code static} container across
- * the whole JVM for a given class hierarchy) — starting a fresh Postgres
- * per test method would make this phase take minutes instead of seconds
- * for no correctness benefit, since {@code create-drop} already gives
- * each *class's* tests a clean schema.
+ * One container, started once per JVM and shared by every test class
+ * that extends this (Testcontainers' "singleton container" pattern: a
+ * {@code static} initializer starts it and Ryuk removes it when the JVM
+ * exits). Deliberately NOT {@code @Testcontainers}/{@code @Container}:
+ * that extension starts and stops the container around each test CLASS,
+ * while Spring caches the {@code ApplicationContext} across classes with
+ * the same configuration — so a later class would reuse a context whose
+ * connection pool still points at the previous class's already-stopped
+ * container ("Connection refused" on the first repository call).
+ * Every context builds the same schema with {@code create-drop}, and
+ * every test creates its own uniquely-named fixtures, so sharing one
+ * database between cached contexts is safe.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.MOCK)
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
-@Testcontainers
 public abstract class AbstractIntegrationTest {
 
-    @Container
     static final PostgreSQLContainer<?> POSTGRES =
             new PostgreSQLContainer<>(DockerImageName.parse("postgres:16-alpine"));
+
+    static {
+        POSTGRES.start();
+    }
 
     @DynamicPropertySource
     static void datasourceProperties(DynamicPropertyRegistry registry) {

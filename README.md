@@ -2,9 +2,36 @@
 
 A secure REST API demonstrating JWT authentication, role-based access control, and ownership-based authorization in Spring Boot. This is Project 2 of a 3-project backend portfolio (Core REST API → **Auth & Authorization** → Production-grade Booking/Order System).
 
-**Status:** ✅ Day 18 — roadmap complete. All 18 days shipped, from Day 1's project skeleton through Day 17's OpenAPI docs. See [What's new in Day 18](#whats-new-in-day-18) below for today's close-out, [Architecture](#architecture) for the diagrams, and [Roadmap](#roadmap) for the full day-by-day record.
+**Status:** ✅ Roadmap complete (Day 18), followed by a post-roadmap hardening pass. All 18 days shipped, from Day 1's project skeleton through Day 17's OpenAPI docs and Day 18's README. A later review pass fixed a rate-limiter bypass, a duplicate-token 500, and several error-handling gaps, and added a one-command end-to-end runner. See [What's new after Day 18](#whats-new-after-day-18--hardening--tooling) for that pass, [Architecture](#architecture) for the diagrams, and [Roadmap](#roadmap) for the full day-by-day record.
 
 ---
+
+## What's new after Day 18 — hardening & tooling
+
+Nothing new was added to the roadmap here. This is a review pass over the finished project that turned up real bugs, fixed them, and added tooling so the whole API can be verified with one command. Each fix below has its own entry in [Design decisions](#design-decisions-living-section-updated-as-the-project-grows).
+
+**Security fixes**
+
+- **Rate limiter no longer trusts `X-Forwarded-For`.** `RateLimitingFilter` used to key buckets on the first value of that header whenever it was present. Since a client controls the header, anyone could get a fresh 20-request bucket per request just by changing it, which defeated the limiter entirely. It now keys on the TCP peer address (`request.getRemoteAddr()`) only. Behind a reverse proxy you control, the filter's javadoc points at Spring Boot's `server.forward-headers-strategy=native` plus Tomcat's `remoteip.internal-proxies` instead.
+- **Access and refresh tokens now carry a unique `jti`.** `iat` has one-second resolution, so two tokens of the same type for the same user issued in the same second were byte-identical. That collided with the `UNIQUE` constraint on `refresh_tokens.token_hash` and surfaced as a `500` on login or refresh. A random UUID `jti` makes every token unique.
+
+**Correctness fixes**
+
+- **`@PreAuthorize` denials now return `403` instead of `500`.** `AccessDeniedException` (and its Spring Security 6.3+ subclass `AuthorizationDeniedException`) is thrown from inside the controller/service call, so it reaches `GlobalExceptionHandler` before the security chain's `RestAccessDeniedHandler` does. Without a dedicated handler, the catch-all turned every "wrong role / not the owner" into a `500`.
+- **More client mistakes return the right status.** Malformed JSON, an unknown enum value, a missing query param, or a wrong-typed path variable now return `400`. Unknown routes return `404`, and unsupported HTTP methods return `405`.
+- **`ProjectSecurity` and `TaskSecurity` are `@Transactional(readOnly = true)`.** They read lazy associations (`owner`, `members`, `project`) and need a session of their own to do that safely.
+- **Filter registration order fixed in `SecurityConfig`.** `addFilterBefore(x, Y.class)` only works if `Y` is already registered, so the JWT filter is registered first (relative to a built-in filter) and the rate limiter is placed before it. The resulting chain is unchanged: `RateLimitingFilter` → `JwtAuthenticationFilter` → `UsernamePasswordAuthenticationFilter`.
+- **Removed the explicit Hibernate dialect** from `application.yml`. Hibernate detects PostgreSQL on its own, and pinning it only produced a deprecation warning.
+
+**Tests**
+
+- **`AbstractIntegrationTest` uses the singleton-container pattern** (a `static` initializer starts Postgres once per JVM) instead of `@Testcontainers`/`@Container`. The extension stopped the container after each test class while Spring kept reusing a cached context pointing at it, so later classes failed with `Connection refused`.
+- **`RateLimitIntegrationTest` simulates clients by setting the remote address**, since the header is no longer trusted, and has a new test, `spoofedXForwardedForHeader_doesNotGrantAFreshBucket`, which locks the bypass fix in.
+
+**Tooling & housekeeping**
+
+- **[`taskflow_e2e.py`](#one-command-end-to-end-runner)** automates the full end-to-end walkthrough below: Docker, the app, mock-email token capture, every Day 4–13 check, and a pass/fail summary.
+- **`LICENSE` added** (MIT), matching the License section at the bottom.
 
 ## What's new in Day 18
 
@@ -91,7 +118,9 @@ sequenceDiagram
 - JWT (JJWT)
 - JUnit 5, Mockito, Testcontainers
 - springdoc-openapi (Swagger UI)
+- Bucket4j (rate limiting)
 - Maven
+- Python 3.8+ (standard library only) — optional, for the [end-to-end runner](#one-command-end-to-end-runner)
 
 ## Getting started
 
@@ -164,13 +193,34 @@ This table is a quick-skim reference; for the interactive version with example r
 
 **Pagination/sorting (Day 9):** every "paginated & sortable" endpoint above accepts the usual `?page=&size=&sort=` params, but `sort` is checked against a per-endpoint allowlist — see [What's new in Day 9](#whats-new-in-day-9). Projects: `id`, `name`, `createdAt`, `updatedAt`. Tasks: `id`, `title`, `status`, `priority`, `createdAt`, `updatedAt`. Anything else in `sort` comes back as `400`, not a crash.
 
-**Rate limiting (Day 11):** `/auth/login` and `/auth/register` each allow 20 requests per 60 seconds per client IP, tracked independently of each other. Past that, the response is `429 Too Many Requests` with a `Retry-After: <seconds>` header. See [What's new in Day 11](#whats-new-in-day-11).
+**Rate limiting (Day 11):** `/auth/login` and `/auth/register` each allow 20 requests per 60 seconds per client IP, tracked independently of each other. Past that, the response is `429 Too Many Requests` with a `Retry-After: <seconds>` header. "Client IP" means the TCP peer address; `X-Forwarded-For` is ignored, since clients control it (see the [post-Day-18 fix](#whats-new-after-day-18--hardening--tooling)). The same limit also covers `/auth/verify`, `/auth/resend-verification`, `/auth/forgot-password` and `/auth/reset-password`.
 
 **Email verification (Day 12):** new accounts start disabled. `LoggingEmailService` logs the verification email to the application console instead of sending it — check server output for a line starting `Mock email — to: ...` containing the `/auth/verify?token=...` link. See [What's new in Day 12](#whats-new-in-day-12).
 
 **Password reset (Day 13):** same mocked-email mechanism as verification, 1-hour token lifetime instead of 24. Resetting a password revokes every refresh token the account currently holds — anyone still logged in elsewhere is logged out. See [What's new in Day 13](#whats-new-in-day-13).
 
+## One-command end-to-end runner
+
+Everything in the manual walkthrough below is also automated in `taskflow_e2e.py`, a single-file runner with no dependencies beyond Python 3.8+. It starts Postgres (`docker compose up -d`), launches the app with `mvn spring-boot:run`, reads the mocked verification and password-reset tokens straight out of the app's console output, runs the Day 4–13 sequence against the live app, prints a PASS / FAIL / WARN / SKIP summary, stops the app, and exits `0` or `1` (so it can also gate CI).
+
+```bash
+python taskflow_e2e.py                      # full run: docker + app + tests + cleanup
+python taskflow_e2e.py --reset-db           # wipe the Postgres volume first (clean slate)
+python taskflow_e2e.py --list               # show the available sections
+python taskflow_e2e.py --only day6,day8     # run selected sections (dependencies are pulled in automatically)
+python taskflow_e2e.py -v                   # trace every HTTP call
+python taskflow_e2e.py --debug              # stream the app console live + trace everything
+python taskflow_e2e.py --keep-running       # leave the app and DB up afterwards for manual poking
+python taskflow_e2e.py --attach --email-log app.log   # app already running elsewhere; read mock emails from its log
+```
+
+Useful extras: `--fail-fast`, `--skip`, `--skip-docker`, `--jvm-debug` (JDWP on `:5005`), `--mvn-args "-o -DskipTests"`, and `--rate-limit-capacity` / `--lockout-attempts` if you changed those values in `application.yml`.
+
+When a step fails, the runner prints the full request and response, the app-log lines emitted during that request, and a ready-to-paste `curl` replay command. Every run also writes `reports/run-<timestamp>/` containing `app.log`, `http-trace.jsonl` and `report.json`. That folder is generated output, so add `reports/` to `.gitignore`.
+
 ## Full end-to-end test sequence
+
+> Prefer not to copy-paste? [`taskflow_e2e.py`](#one-command-end-to-end-runner) runs this entire sequence for you.
 
 This walks the whole API in order, from an empty database to ownership/membership enforcement, one feature area at a time. Every block is labeled with the day that introduced what it's exercising, so it doubles as a guided tour of the project's history — run it top to bottom against a fresh `docker compose up -d` + `mvn spring-boot:run`.
 
@@ -543,7 +593,7 @@ curl -i -X POST http://localhost:8080/auth/login \
 # -> 200, a fresh access/refresh pair
 ```
 
-## Project structure (Day 17)
+## Project structure
 
 ```
 src/main/java/com/ahdyahmed/taskflow/
@@ -557,16 +607,16 @@ src/main/java/com/ahdyahmed/taskflow/
 │   ├── RateLimitProperties.java         # Day 11: app.security.rate-limit.* bound as a record
 │   ├── VerificationProperties.java      # Day 12: app.security.verification.* bound as a record
 │   ├── PasswordResetProperties.java     # Day 13: app.security.password-reset.* bound as a record
-│   ├── SecurityConfig.java              # stateless sessions, JWT + rate-limit filters; Day 17: + public doc paths
+│   ├── SecurityConfig.java              # stateless sessions, JWT + rate-limit filters (registration order matters — see inline comment); Day 17: + public doc paths
 │   ├── MethodSecurityConfig.java        # @EnableMethodSecurity + role hierarchy (ADMIN > MANAGER > USER)
 │   └── OpenApiConfig.java               # Day 17: OpenAPI info + bearerAuth security scheme, applied globally
 ├── email/
 │   ├── EmailService.java                # Day 12: send(to, subject, body) — transport-only interface
 │   └── LoggingEmailService.java         # Day 12: the only impl — logs instead of sending
 ├── security/
-│   ├── JwtService.java                  # generate/validate access + refresh tokens
+│   ├── JwtService.java                  # generate/validate access + refresh tokens; post-Day-18: unique jti on every token
 │   ├── JwtAuthenticationFilter.java     # OncePerRequestFilter, parses Bearer tokens
-│   ├── RateLimitingFilter.java          # Day 11: Bucket4j token bucket per (IP, path); Day 12/13: + verify/resend/forgot/reset paths
+│   ├── RateLimitingFilter.java          # Day 11: Bucket4j token bucket per (IP, path); Day 12/13: + verify/resend/forgot/reset paths; post-Day-18: keys on TCP peer address, ignores X-Forwarded-For
 │   ├── AppUserPrincipal.java            # UserDetails wrapping the domain User; Day 10: real isAccountNonLocked(); Day 12: real isEnabled()
 │   ├── CustomUserDetailsService.java    # UserDetailsService backed by UserRepository
 │   ├── TokenHasher.java                 # SHA-256, used for refresh/verification/reset-token-at-rest storage
@@ -574,8 +624,8 @@ src/main/java/com/ahdyahmed/taskflow/
 │   ├── RestAuthenticationEntryPoint.java# 401 — no/invalid token
 │   ├── RestAccessDeniedHandler.java     # 403 — valid token, wrong role/not owner/not member
 │   ├── AuthenticatedUser.java           # Day 8: Authentication -> domain User, shared helper
-│   ├── ProjectSecurity.java             # Day 8: @projectSecurity.isOwner/isMember for @PreAuthorize
-│   └── TaskSecurity.java                # Day 8: @taskSecurity.isOwnerOrAssignee/isProjectOwner/isProjectMember
+│   ├── ProjectSecurity.java             # Day 8: @projectSecurity.isOwner/isMember for @PreAuthorize; post-Day-18: @Transactional(readOnly = true)
+│   └── TaskSecurity.java                # Day 8: @taskSecurity.isOwnerOrAssignee/isProjectOwner/isProjectMember; post-Day-18: @Transactional(readOnly = true)
 ├── controller/
 │   ├── AuthController.java              # + Day 12: GET /verify, POST /resend-verification; Day 13: POST /forgot-password, /reset-password; Day 17: @Tag + @SecurityRequirements (public)
 │   ├── AdminUserController.java         # ADMIN-only: list users, change role; Day 17: @Tag + @Operation
@@ -609,7 +659,7 @@ src/main/java/com/ahdyahmed/taskflow/
 │   ├── InvalidTokenException.java       # Day 13: also covers an invalid/expired password-reset token
 │   ├── AccountNotVerifiedException.java # Day 12: unverified-account login rejection
 │   ├── MemberHasActiveAssignmentsException.java  # Day 9: the member-removal guard
-│   └── GlobalExceptionHandler.java      # @RestControllerAdvice, consistent JSON error shape; Day 9/12: + 409/403/400 handlers above
+│   └── GlobalExceptionHandler.java      # @RestControllerAdvice, consistent JSON error shape; Day 9/12: + 409/403/400 handlers above; post-Day-18: + AccessDenied 403, malformed-request 400, unknown-route 404, 405
 ├── domain/
 │   ├── entity/                          # BaseEntity, User, Project, Task, RefreshToken, VerificationToken, PasswordResetToken
 │   └── enums/                           # Role, TaskStatus, TaskPriority
@@ -628,13 +678,16 @@ src/test/java/com/ahdyahmed/taskflow/
 │   ├── AuthServiceTest.java                   # Day 14: login success/failure branches, reset-password token states
 │   └── LoginAttemptServiceTest.java           # Day 16: the counting/lockout arithmetic itself
 └── integration/
-    ├── AbstractIntegrationTest.java           # Day 15: Testcontainers Postgres + MockMvc scaffolding, shared by every IT
+    ├── AbstractIntegrationTest.java           # Day 15: Testcontainers Postgres + MockMvc scaffolding, shared by every IT; post-Day-18: singleton-container pattern
     ├── SecurityIntegrationTest.java           # Day 15: the full RBAC/ownership/lockout/token test matrix, real HTTP
     ├── RefreshTokenLifecycleIntegrationTest.java # Day 16: rotation on refresh, revocation + idempotency on logout
-    └── RateLimitIntegrationTest.java          # Day 16: 429 after threshold, keyed per (ip, path)
+    └── RateLimitIntegrationTest.java          # Day 16: 429 after threshold, keyed per (ip, path); post-Day-18: + spoofed X-Forwarded-For test
 
 src/test/resources/
 └── application-test.yml                       # Day 15: test-profile overrides (create-drop, no dev seed data)
+
+taskflow_e2e.py                               # post-Day-18: one-command end-to-end runner (Python stdlib only)
+LICENSE                                       # MIT
 ```
 
 ## Roadmap
@@ -656,6 +709,7 @@ src/test/resources/
 | 16 | Fill gaps + coverage review (`LoginAttemptServiceTest`, refresh rotation/revocation, rate-limit 429) | ✅ |
 | 17 | OpenAPI docs (springdoc, Bearer JWT scheme, DTO examples) | ✅ |
 | 18 | Architecture diagram, final README | ✅ |
+| Post-18 | Hardening pass (rate-limiter bypass, `jti`, 403/400/404/405 handling), e2e runner, LICENSE | ✅ |
 
 ## Design decisions (living section, updated as the project grows)
 
@@ -714,7 +768,7 @@ src/test/resources/
 - **Bucket4j over a hand-rolled counter (Day 11):** a token bucket (vs. a naive "count requests in the last N seconds" counter) allows some burstiness — a legitimate user who mistypes their password twice in quick succession isn't treated differently from one request every few seconds — while still enforcing a hard average rate over time. Rolling a custom version of this correctly (thread-safe, no race conditions on concurrent requests to the same bucket) is exactly the kind of thing worth reaching for a well-tested library over, rather than a bespoke `AtomicInteger` + timestamp scheme that looks right until it's tested under real concurrency.
 - **Rate limiting is a separate filter from the account lockout in `LoginAttemptService`, not merged into one mechanism (Day 11):** they answer different questions — "is this source making too many requests" vs. "has this specific account failed too many times" — and conflating them would mean an attacker spreading attempts across many accounts from one IP gets caught by rate limiting but never by lockout (correctly, since no single account is under attack), while an attacker rotating IPs against one account gets caught by lockout but never by rate limiting (also correctly). Keeping them independent means each does its one job without trying to also do the other's.
 - **Keyed by `(IP, path)`, not `IP` alone (Day 11):** `/auth/login` and `/auth/register` get separate budgets per client, so exhausting one doesn't block the other — someone genuinely struggling to log in shouldn't lose their ability to register a second account (or vice versa) as a side effect.
-- **In-memory and single-instance, documented rather than hidden (Day 11):** the bucket state lives in a `ConcurrentHashMap` on the filter instance. That's fine for one instance and wrong the moment there's more than one behind a load balancer — an attacker gets roughly N× the intended limit, split across instances by whichever one each request happens to hit. `RateLimitingFilter`'s javadoc calls this out explicitly and points at Redis (which Bucket4j supports natively) as the fix, matching the roadmap's own note that this would need to move to Redis in a multi-instance deployment — this project just isn't a multi-instance deployment yet.
+- **In-memory and single-instance, documented rather than hidden (Day 11):** the bucket state lives in a `ConcurrentHashMap` on the filter instance. That's fine for one instance and wrong the moment there's more than one behind a load balancer — an attacker gets roughly N× the intended limit, split across instances by whichever one each request happens to hit. `RateLimitingFilter`'s javadoc calls this out explicitly and points at Redis (which Bucket4j supports natively) as the fix, matching the roadmap's own note that this would need to move to Redis in a multi-instance deployment — this project just isn't a multi-instance deployment yet. (The original version of this filter also trusted `X-Forwarded-For` for the client address; that was a bypass and was removed after Day 18 — see below.)
 - **20 requests/minute, not something stricter (Day 11):** tuned partly for the actual security goal (still meaningfully throttles brute-forcing, since 20 guesses/minute is orders of magnitude below what an unthrottled endpoint allows) and partly so this README's own [test sequence](#full-end-to-end-test-sequence) — which calls `/auth/login` and `/auth/register` a couple dozen times across Day 4/6/7/10 before Day 11 even starts — can be run start to finish without accidentally tripping the limiter. Both numbers are one config change away (`app.security.rate-limit.*`) if a stricter limit is ever wanted; this is a starting point, not a claim that 20/min is the objectively correct number.
 - **`EmailService` is transport-only; content-building stays in `AuthService` (Day 12):** the interface is exactly `send(to, subject, body)` — no `sendVerificationEmail(...)`, no knowledge of tokens or links. Putting content-building in the interface would mean every new kind of email (verification today, password reset on Day 13, maybe others later) needs either a new interface method or a generic "template + params" scheme bolted on. Keeping the interface dumb means `LoggingEmailService` never has to change, and a future real implementation (SMTP, SES, Postmark, whatever) only ever has to solve "deliver this text," never "understand what this project's emails mean."
 - **Verification tokens follow `RefreshToken`'s exact shape — hashed at rest, expiring, single-use (Day 12):** `VerificationToken` is structurally the same entity with `used` playing `RefreshToken.revoked`'s role. This is reuse of an already-reasoned-through pattern (see the Day 6 `TokenHasher` note), not a coincidence — there was no reason to invent a second way to represent "a server-issued, one-time, expiring credential" when one already existed and was already correct.
@@ -742,7 +796,7 @@ src/test/resources/
 - **The "reaches max attempts" test asserts a before/after time window, not an exact `LocalDateTime` (Day 16):** `registerFailedAttempt` calls `LocalDateTime.now()` internally with no clock seam (same limitation noted for `JwtService` on Days 14-15), so a test asserting the lock expiry equals one exact computed instant would be flaky by a few milliseconds depending on how fast the test runs. Capturing `now()` immediately before and after the call and asserting the result falls inside that window (each bounded to the nearest second) proves the same thing without the flakiness.
 - **`RateLimitIntegrationTest` overrides capacity via its own `@DynamicPropertySource`, not a lower value in `application-test.yml` (Day 16):** the latter would apply to every integration test class using the `test` profile, meaning `SecurityIntegrationTest`'s ~16 real login calls would suddenly start hitting a wall meant for a completely different test's purposes. Scoping the override to one class's own dynamic properties gives that class a distinct Spring context (and, since Postgres schema is `create-drop`, a fresh schema) without touching any other test's configuration.
 - **The 429 test asserts `Retry-After` is present and the message's shape, not an exact retry-seconds value (Day 16):** with `capacity: 3` refilled greedily over 60 seconds, the next token arrives roughly 20 seconds after exhaustion — but exactly how many nanoseconds remain when the assertion runs depends on timing that a test shouldn't be sensitive to. Pinning the exact number would make the test flake for reasons that have nothing to do with whether rate limiting actually works.
-- **`RateLimitIntegrationTest` uses `X-Forwarded-For` to simulate distinct client IPs rather than relying on MockMvc's real (identical) remote address across requests (Day 16):** `RateLimitingFilter` already trusts that header (a documented, deliberate single-instance-only trade-off — see the filter's own javadoc), which conveniently doubles as the only practical way to prove the bucket is genuinely keyed per-IP from inside a single MockMvc test process, where every request would otherwise appear to originate from the same address.
+- **`RateLimitIntegrationTest` simulates distinct client IPs by setting the request's remote address (Day 16; revised post-Day-18):** this originally used an `X-Forwarded-For` header because `RateLimitingFilter` trusted it. That trust turned out to be a bypass (see the post-Day-18 entry below), so the tests now set `MockHttpServletRequest.setRemoteAddr(...)` through a small `RequestPostProcessor`, which is the address the filter actually keys on. The header approach would now make every request look like the same client.
 - **springdoc pinned to 2.6.0 rather than whatever the latest release is (Day 17):** checked springdoc's own changelog before adding the dependency rather than assuming "newest is fine" — 2.7.0 explicitly bumped its target to Spring Boot 3.4.0, and this project has pinned 3.3.5 since Day 1. Taking the latest version without checking would have been the kind of dependency mismatch that fails at context-startup with a confusing error, days after the fact, for a reason that has nothing to do with anything actually written in this project.
 - **The Bearer scheme is a global default, opted out of per-controller, rather than opted into per-endpoint (Day 17):** the alternative — leaving no global security requirement and adding `@SecurityRequirement(name = "bearerAuth")` to every `ProjectController`/`TaskController`/`AdminUserController` method individually — is more entries to keep in sync and an easy one to forget on a newly-added endpoint (it would silently document as "public" something that's actually gated by Spring Security regardless). A global default that `AuthController` opts out of, once, at the class level, means a new authenticated endpoint is accurate by default and a new public one has to say so explicitly — the safer direction to make the default lean.
 - **`PUBLIC_DOC_ENDPOINTS` is a separate array in `SecurityConfig`, not folded into `PUBLIC_AUTH_ENDPOINTS` (Day 17):** both end up calling the same `permitAll()`, so merging them would work identically at runtime. Keeping them apart is purely for the next person reading this file — `PUBLIC_AUTH_ENDPOINTS`' reasoning ("you can't require a login to log in") doesn't apply to `/swagger-ui/**` at all, and a single merged array would force a reader to hold two different justifications for entries that look otherwise identical.
@@ -751,9 +805,17 @@ src/test/resources/
 - **Why refresh tokens are stored server-side (hashed) instead of relying on purely stateless JWTs for everything, stated as the trade-off it is (Day 18, consolidating Day 6/13's reasoning):** a pure-stateless design — no `RefreshToken` table, both tokens just JWTs with different expiries — would mean *nothing* about a token is revocable before it naturally expires; a stolen refresh token would stay valid for its full 7-day life no matter what the legitimate user does afterward, including logging out or resetting their password. Server-side storage buys immediate revocability (Day 6's rotation, Day 13's reset-triggered mass-revocation) at a real, accepted cost: a DB write on every login/refresh, and the API is no longer *fully* stateless — this service now needs a database in the loop for the refresh path specifically, not just for domain data. The trade was made deliberately in the direction of revocability, because "can't be revoked" is a worse property for a security-focused project to ship than "isn't perfectly stateless."
 - **Why the lockout window is 15 minutes, specifically, not just that the counting logic is correct (Day 18; Day 10 covered the mechanics, not this):** long enough that exhaustively guessing a password becomes impractical — 5 attempts per 15 minutes is roughly 480 guesses/day, nowhere near enough to brute-force even a weak password — but short enough that a real user who locked themselves out by mistyping their own password repeatedly gets back in within a coffee break, not a day, and specifically doesn't have to fall back on `/auth/forgot-password` just to recover from their own typo. Both failure modes (too short = doesn't slow an attacker; too long = punishes legitimate users disproportionately for the more common failure) were weighed against each other; 15 minutes is a starting point that would legitimately need tuning against real login-failure telemetry in production, not a number treated as sacred.
 - **Refresh rotation, restated as the trade-off it is rather than just the mechanism (Day 18; Day 6/16 already covered what it does):** the alternative — a refresh token valid for its full 7 days regardless of how many times it's used — is simpler (no `RefreshToken` row needs updating on every refresh, just read-and-check) but means a stolen refresh token is a 7-day standing problem with no way to detect it happened short of the legitimate user noticing unexpected activity. Rotation converts "stolen token, valid until it naturally expires" into "stolen token, dead the instant either party uses it once" — at the cost of one extra write per refresh call and the small added complexity of Day 15/16's tests needing to prove the old token actually dies, not just that a new one is issued.
-- **What a real multi-instance production deployment would still need that this one deliberately doesn't have (Day 18):** two concrete gaps, both already flagged at the code level and pulled together here since the roadmap specifically asks for this comparison. First, `RateLimitingFilter`'s bucket state is in-memory and per-instance (see the filter's own javadoc) — behind a load balancer with N instances, an attacker effectively gets N× the configured limit; the fix is moving bucket state to Redis, which Bucket4j supports natively, not a redesign of the rate-limiting logic itself. Second, and not discussed anywhere else in this README until now: **there is no distributed access-token blacklist.** Logout and password-reset revoke *refresh* tokens server-side, but the *access* token issued alongside them is a stateless JWT that stays valid for the rest of its 15-minute life regardless — "log this user out right now, everywhere, immediately" isn't a thing this API can currently do; the closest it gets is "within 15 minutes at the very most." That's an accepted trade-off for a portfolio project (short TTL is the mitigation, and checking every single authenticated request against a shared revocation store has a real latency/complexity cost of its own, which Day 6's design decision on live-role-checking already discusses the shape of), but a production system with a genuine "immediately kick this user out" requirement would need one — a Redis set of revoked token ids (`jti` claims, which this project's JWTs don't currently even carry), checked in `JwtAuthenticationFilter` alongside the existing `isValid()`/`isAccessToken()` checks.
+- **What a real multi-instance production deployment would still need that this one deliberately doesn't have (Day 18):** two concrete gaps, both already flagged at the code level and pulled together here since the roadmap specifically asks for this comparison. First, `RateLimitingFilter`'s bucket state is in-memory and per-instance (see the filter's own javadoc) — behind a load balancer with N instances, an attacker effectively gets N× the configured limit; the fix is moving bucket state to Redis, which Bucket4j supports natively, not a redesign of the rate-limiting logic itself. Second, and not discussed anywhere else in this README until now: **there is no distributed access-token blacklist.** Logout and password-reset revoke *refresh* tokens server-side, but the *access* token issued alongside them is a stateless JWT that stays valid for the rest of its 15-minute life regardless — "log this user out right now, everywhere, immediately" isn't a thing this API can currently do; the closest it gets is "within 15 minutes at the very most." That's an accepted trade-off for a portfolio project (short TTL is the mitigation, and checking every single authenticated request against a shared revocation store has a real latency/complexity cost of its own, which Day 6's design decision on live-role-checking already discusses the shape of), but a production system with a genuine "immediately kick this user out" requirement would need one — a Redis set of revoked token ids (the `jti` claim, which this project's JWTs did not carry when this was written but do now — see the post-Day-18 entry below), checked in `JwtAuthenticationFilter` alongside the existing `isValid()`/`isAccessToken()` checks.
+- **`RateLimitingFilter` keys on `getRemoteAddr()` only and ignores `X-Forwarded-For` (post-Day-18 fix):** the original `clientIp()` took the first comma-separated value of that header whenever it was present. A header the client sets for itself is not identity. Sending a different value on each request created a brand-new 20-request bucket every time, so the limiter could be bypassed completely, and the lockout was then the only brute-force defense left. The filter now trusts only the TCP peer. The trade-off is that behind a reverse proxy every request appears to come from the proxy's address unless the container is told which proxies to trust. The correct fix for that is configuration, not hand-parsing: `server.forward-headers-strategy=native` together with Tomcat's `server.tomcat.remoteip.internal-proxies`, so the header is only honored when it arrives from a proxy you control and `getRemoteAddr()` already returns the real client. Nothing in this project sits behind a proxy yet, so none of that is configured; it is documented in the filter's javadoc for whoever deploys it.
+- **Every JWT carries a random `jti` (post-Day-18 fix):** `JwtService` built tokens from `sub`, `type`, `iat` and `exp`. `iat` only has one-second resolution, so two refresh tokens for the same user issued within the same second (a login immediately followed by a refresh, for example) were byte-for-byte identical, which means identical SHA-256 hashes, which violates the `UNIQUE` constraint on `refresh_tokens.token_hash` and surfaced to the client as a `500`. Adding `.id(UUID.randomUUID().toString())` fixes it at the source, where the alternative was catching the constraint violation and retrying. It also happens to be the prerequisite for the access-token revocation list described in the Day 18 multi-instance entry above, though nothing consumes `jti` for revocation yet.
+- **`GlobalExceptionHandler` now handles `AccessDeniedException` explicitly, because method security bypasses the filter chain's handler (post-Day-18 fix):** Day 7's design decision says custom `AuthenticationEntryPoint`/`AccessDeniedHandler` beans exist because filter-chain exceptions never reach `@RestControllerAdvice`. The mirror case was missed: `@PreAuthorize` denials are thrown from inside the controller/service invocation, which is inside the MVC layer, so they do reach the advice, and the catch-all `Exception` handler was answering them with `500`. Both paths now produce the same `403` with the same `ApiErrorResponse` shape, so a client cannot tell which layer denied it. The same pass added `400` for malformed JSON / unknown enum values / missing params / wrong-typed path variables, `404` for unknown routes (Spring Boot 3.2+ throws `NoResourceFoundException` rather than answering itself), and `405` for unsupported methods. Each of those is a client mistake that was previously reported as a server fault.
+- **`ProjectSecurity`/`TaskSecurity` are `@Transactional(readOnly = true)` (post-Day-18 fix):** the ownership checks navigate lazy associations (`project.getOwner()`, `project.getMembers()`), and all associations in this project are `LAZY` by design (see Day 1-2). Inside a `@PreAuthorize` expression there is no guarantee that a session is open around the bean call, so touching a lazy collection there is a `LazyInitializationException` waiting for the right call path. Putting the transaction on the security beans themselves makes each check self-contained regardless of who invokes it, and `readOnly = true` documents, and lets Hibernate enforce, that an authorization check must never write.
+- **Filter registration order in `SecurityConfig` is significant, not cosmetic (post-Day-18 fix):** `addFilterBefore(filter, AnchorFilter.class)` requires the anchor class to already have a registered order. The original code anchored the rate limiter to `JwtAuthenticationFilter` *before* `JwtAuthenticationFilter` itself had been registered, which Spring Security rejects at startup with a "does not have a registered order" error. The fix is purely a reordering of two lines: register the JWT filter relative to the built-in `UsernamePasswordAuthenticationFilter` first, then place the rate limiter before it. The runtime order is the one Day 11 intended (rate limit, then JWT parse, then the rest), and an inline comment explains why the source order is the reverse of the execution order.
+- **Integration tests share one Postgres via a `static` initializer, not `@Testcontainers`/`@Container` (post-Day-18 fix, supersedes the Day 15 wording):** the extension starts the container before a test class and stops it after, but Spring caches the `ApplicationContext` across classes that share a configuration. The second class therefore reused a context whose connection pool still pointed at the first class's now-stopped container, and its first repository call failed with `Connection refused`. The singleton-container pattern (start once in a `static` block, let Ryuk reap it when the JVM exits) removes the mismatch. Sharing one database across cached contexts is safe because each context builds its schema with `create-drop` and every test creates its own uniquely-named fixtures, which is the reason Day 15 used UUID-suffixed emails in the first place.
+- **Hibernate dialect is no longer pinned in `application.yml` (post-Day-18):** `org.hibernate.dialect.PostgreSQLDialect` was set explicitly, but Hibernate 6 detects the dialect from the JDBC connection and logs a deprecation warning when it is also configured by hand. Less configuration, same behavior.
+- **`taskflow_e2e.py` is Python standard library only, and reads tokens from the app's console rather than the database (post-Day-18):** the mocked email sender logs verification and reset tokens to the console and nowhere else, since only hashes are stored at rest (see the Day 6 and Day 12 entries). So the honest way to automate those flows is the same way a human does it: read them out of the log. Skipping a database backdoor keeps the runner exercising exactly what a real client could. It avoids `pip install` for the same reason the manual walkthrough avoids `jq`: nothing extra to set up before it works.
 - **Roadmap complete as of today.** Every phase from the original plan shipped: domain model and CRUD (Days 1-3), the JWT auth core (Days 4-6), RBAC and ownership (Days 7-9), account protection (Days 10-11), email verification and password reset (Days 12-13), the full testing phase (Days 14-16), and docs/polish (Days 17-18). This section stays open for anything that comes up after — a dependency bump, a bug found in use, a gap noticed later — but there's no more roadmap driving new entries into it day by day.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

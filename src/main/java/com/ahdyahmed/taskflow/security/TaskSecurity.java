@@ -6,6 +6,7 @@ import com.ahdyahmed.taskflow.repository.TaskRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Day 8. Referenced from {@code @PreAuthorize} as {@code @taskSecurity}.
@@ -13,6 +14,7 @@ import org.springframework.stereotype.Component;
  * {@code false} (403) instead of throwing (which would surface as 404) —
  * same reasoning here, and the same ADMIN short-circuit applies.
  */
+@Transactional(readOnly = true)
 @Component("taskSecurity")
 @RequiredArgsConstructor
 public class TaskSecurity {

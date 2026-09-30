@@ -75,8 +75,14 @@ public class SecurityConfig {
                 // Day 11: rate limiting runs first, ahead of JWT parsing —
                 // a request that's going to be rejected as 429 shouldn't
                 // pay for token parsing or touch the SecurityContext at all.
-                .addFilterBefore(rateLimitingFilter, JwtAuthenticationFilter.class)
-                .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
+                // Order matters here: a filter can only be used as an anchor
+                // (the 2nd argument) once it has been registered itself.
+                // So JWT is registered first, relative to a built-in Spring
+                // filter, and only then is the rate limiter placed before it.
+                // Resulting chain: RateLimitingFilter -> JwtAuthenticationFilter
+                // -> UsernamePasswordAuthenticationFilter.
+                .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
+                .addFilterBefore(rateLimitingFilter, JwtAuthenticationFilter.class);
 
         return http.build();
     }

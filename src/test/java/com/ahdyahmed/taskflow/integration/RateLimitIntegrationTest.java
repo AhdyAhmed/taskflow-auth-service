@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import static org.hamcrest.Matchers.startsWith;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -50,7 +51,7 @@ class RateLimitIntegrationTest extends AbstractIntegrationTest {
         // 401, exactly as an attacker's failed guesses would.
         for (int i = 1; i <= 3; i++) {
             mockMvc.perform(post("/auth/login")
-                            .header("X-Forwarded-For", "203.0.113.10")
+                            .with(remoteAddr("203.0.113.10"))
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(objectMapper.writeValueAsString(request)))
                     .andExpect(status().isUnauthorized());
@@ -65,7 +66,7 @@ class RateLimitIntegrationTest extends AbstractIntegrationTest {
         // present and the message has the right shape is the stable,
         // non-flaky version of this check.
         mockMvc.perform(post("/auth/login")
-                        .header("X-Forwarded-For", "203.0.113.10")
+                        .with(remoteAddr("203.0.113.10"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isTooManyRequests())
@@ -82,14 +83,14 @@ class RateLimitIntegrationTest extends AbstractIntegrationTest {
 
         for (int i = 1; i <= 3; i++) {
             mockMvc.perform(post("/auth/login")
-                            .header("X-Forwarded-For", "203.0.113.20")
+                            .with(remoteAddr("203.0.113.20"))
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(objectMapper.writeValueAsString(request)))
                     .andExpect(status().isUnauthorized());
         }
         // This IP is now exhausted...
         mockMvc.perform(post("/auth/login")
-                        .header("X-Forwarded-For", "203.0.113.20")
+                        .with(remoteAddr("203.0.113.20"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isTooManyRequests());
@@ -99,7 +100,7 @@ class RateLimitIntegrationTest extends AbstractIntegrationTest {
         // just path — a busy shared endpoint doesn't become collateral
         // damage for every client because of one noisy one.
         mockMvc.perform(post("/auth/login")
-                        .header("X-Forwarded-For", "203.0.113.21")
+                        .with(remoteAddr("203.0.113.21"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isUnauthorized());
@@ -113,13 +114,13 @@ class RateLimitIntegrationTest extends AbstractIntegrationTest {
 
         for (int i = 1; i <= 3; i++) {
             mockMvc.perform(post("/auth/login")
-                            .header("X-Forwarded-For", "203.0.113.30")
+                            .with(remoteAddr("203.0.113.30"))
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(objectMapper.writeValueAsString(loginRequest)))
                     .andExpect(status().isUnauthorized());
         }
         mockMvc.perform(post("/auth/login")
-                        .header("X-Forwarded-For", "203.0.113.30")
+                        .with(remoteAddr("203.0.113.30"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(loginRequest)))
                 .andExpect(status().isTooManyRequests());
@@ -133,9 +134,46 @@ class RateLimitIntegrationTest extends AbstractIntegrationTest {
         // needs; a 429 here would mean the two paths were wrongly
         // sharing one budget.)
         mockMvc.perform(post("/auth/register")
-                        .header("X-Forwarded-For", "203.0.113.30")
+                        .with(remoteAddr("203.0.113.30"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{}"))
                 .andExpect(status().isBadRequest());
+    }
+
+    /**
+     * Simulates a distinct client by setting the request's remote address,
+     * which is what {@code RateLimitingFilter} keys on. (An earlier version
+     * used an {@code X-Forwarded-For} header for this, but that header is
+     * client-controlled and the filter no longer trusts it.)
+     */
+    private static RequestPostProcessor remoteAddr(String ip) {
+        return request -> {
+            request.setRemoteAddr(ip);
+            return request;
+        };
+    }
+
+    @Test
+    void spoofedXForwardedForHeader_doesNotGrantAFreshBucket() throws Exception {
+        LoginRequest request = new LoginRequest();
+        request.setEmail("does-not-matter@taskflow.test");
+        request.setPassword("whatever-this-is-wrong-anyway");
+
+        for (int i = 1; i <= 3; i++) {
+            mockMvc.perform(post("/auth/login")
+                            .with(remoteAddr("203.0.113.40"))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(request)))
+                    .andExpect(status().isUnauthorized());
+        }
+
+        // Same real address, but the client claims to be someone else via
+        // a header it fully controls. Must still be rate limited.
+        mockMvc.perform(post("/auth/login")
+                        .with(remoteAddr("203.0.113.40"))
+                        .header("X-Forwarded-For", "198.51.100.77")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isTooManyRequests());
     }
 }

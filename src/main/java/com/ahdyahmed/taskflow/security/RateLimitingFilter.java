@@ -106,19 +106,18 @@ public class RateLimitingFilter extends OncePerRequestFilter {
     }
 
     /**
-     * Trusts {@code X-Forwarded-For} when present. That's only safe
-     * because this is a single-instance deployment sitting directly
-     * behind whatever reverse proxy sets that header (or nothing at
-     * all, in local dev) — a header a client could set for itself isn't
-     * trustworthy the moment there's a proxy in front of this that
-     * *doesn't* strip client-supplied values before adding its own.
-     * Worth revisiting alongside the Redis migration noted above.
+     * Keys on the actual TCP peer address only. {@code X-Forwarded-For}
+     * is deliberately NOT read here: it's a client-controlled header, so
+     * trusting it lets any caller mint a fresh bucket per request just by
+     * varying it, which defeats the rate limit entirely.
+     * <p>
+     * Behind a reverse proxy you control, don't parse the header by hand —
+     * set {@code server.forward-headers-strategy=native} plus Tomcat's
+     * {@code server.tomcat.remoteip.internal-proxies} so the container
+     * only honors it when it comes from your proxy, and
+     * {@code getRemoteAddr()} then returns the real client address.
      */
     private String clientIp(HttpServletRequest request) {
-        String forwardedFor = request.getHeader("X-Forwarded-For");
-        if (forwardedFor != null && !forwardedFor.isBlank()) {
-            return forwardedFor.split(",")[0].trim();
-        }
         return request.getRemoteAddr();
     }
 }

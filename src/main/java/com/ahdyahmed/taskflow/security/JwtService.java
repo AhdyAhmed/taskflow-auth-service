@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
 import java.util.Date;
+import java.util.UUID;
 import java.util.function.Function;
 
 /**
@@ -69,7 +70,12 @@ public class JwtService {
         Date now = new Date();
         Date expiry = new Date(now.getTime() + expirationMs);
 
+        // jti: without a unique id, two tokens for the same user/type issued
+        // within the same second (iat has 1-second resolution) are
+        // byte-identical, which collides with the UNIQUE token_hash on
+        // refresh_tokens and surfaces as a 500 on login/refresh.
         return Jwts.builder()
+                .id(UUID.randomUUID().toString())
                 .subject(subjectEmail)
                 .claim(CLAIM_TOKEN_TYPE, tokenType)
                 .issuedAt(now)
